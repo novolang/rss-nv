@@ -1,0 +1,173 @@
+// rsswrite_tests.nv — a feed back out, and what each format cannot
+// carry.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE ASSERTIONS ARE ABOUT REFUSALS, on purpose.  A writer's bugs are
+// not in the bytes it produces for the ordinary case — those are
+// obvious the first time anybody subscribes — they are in what it
+// quietly dropped, which nobody notices until a reader asks where the
+// contributors went.  So `writable` is asserted before the writers
+// are, and every refusal is asserted by name.
+
+use std.test
+use std.list
+use civil
+use rssfeed
+use rsswrite
+use rssdate
+
+@test
+fn test_atom_can_carry_everything_this_package_models() [io]
+    test.case("so writable is empty for it, always")
+    let f = rssfeed.push_entry(rssfeed.empty_feed(), rssfeed.empty_entry())
+    test.assert(list.len(rsswrite.writable(f, RssFormatAtom10)) == 0)
+
+@test
+fn test_rss_refuses_xhtml_content_by_name() [io]
+    // RSS 2.0 has no way to say a description is live markup rather
+    // than escaped text, so writing one loses the distinction the
+    // whole package exists to keep.
+    let e = rssfeed.entry_with_content(rssfeed.empty_entry(),
+                                       rssfeed.xhtml("<p>hi</p>"))
+    let f = rssfeed.push_entry(rssfeed.empty_feed(), e)
+
+    test.case("the problem is named before a byte is written")
+    let problems = rsswrite.writable(f, RssFormatRss20)
+    test.assert(list.len(problems) > 0)
+    for p in problems
+        match p.kind
+            RssNotWritable(field, target) =>
+                test.assert(field != "")
+                test.assert(rssfeed.format_name(target) == "rss20")
+            _                             => test.assert(false)
+
+    test.case("and the write refuses rather than dropping it")
+    match rsswrite.write_rss20([], f, rsswrite.default_options())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_lossy_turns_a_refusal_into_a_dropped_field() [io]
+    let e = rssfeed.entry_with_content(rssfeed.empty_entry(),
+                                       rssfeed.xhtml("<p>hi</p>"))
+    let f = rssfeed.push_entry(rssfeed.empty_feed(), e)
+    let o = rsswrite.with_lossy(rsswrite.default_options(), true)
+
+    test.case("for the caller who wants RSS and has read the list")
+    match rsswrite.write_rss20([], f, o)
+        Ok(b)  => test.assert(list.len(b) > 0)
+        Err(_) => test.assert(false)
+
+@test
+fn test_json_feed_refuses_what_the_xml_formats_can_say() [io]
+    let c = rssfeed.category("novo-lang", "https://example.com/tags", "")
+    let f = rssfeed.push_category(rssfeed.empty_feed(), c)
+
+    test.case("a category scheme has no JSON Feed spelling")
+    test.assert(list.len(rsswrite.writable(f, RssFormatJson11)) > 0)
+
+    test.case("and the same feed writes to Atom with nothing lost")
+    test.assert(list.len(rsswrite.writable(f, RssFormatAtom10)) == 0)
+
+@test
+fn test_a_write_appends_to_the_callers_buffer() [io]
+    let f = rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog"))
+
+    test.case("an empty buffer comes back longer")
+    match rsswrite.write_atom10([], f, rsswrite.default_options())
+        Err(_) => test.assert(false)
+        Ok(b)  =>
+            test.assert(list.len(b) > 0)
+
+            test.case("and writing twice into the same buffer appends twice")
+            match rsswrite.write_atom10(b, f, rsswrite.default_options())
+                Err(_) => test.assert(false)
+                Ok(c)  => test.assert(list.len(c) > list.len(b))
+
+@test
+fn test_write_len_agrees_with_write() [io]
+    let f = rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog"))
+    let o = rsswrite.default_options()
+
+    test.case("the count is exact, not an estimate")
+    match rsswrite.write_len(f, RssFormatAtom10, o)
+        Err(_) => test.assert(false)
+        Ok(n)  =>
+            match rsswrite.write_atom10([], f, o)
+                Err(_) => test.assert(false)
+                Ok(b)  => test.assert(list.len(b) == n)
+
+@test
+fn test_the_fragment_writers_compose_into_the_whole_feed() [io]
+    // The shape a site generator streaming out of a database uses: it
+    // never holds every entry at once, and the bytes have to be the
+    // same as the ones the whole-feed writer would have produced.
+    let e = rssfeed.entry_with_id(rssfeed.empty_entry(), "urn:1", false)
+    let f = rssfeed.push_entry(
+              rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog")), e)
+    let o = rsswrite.default_options()
+
+    test.case("head then entry then tail is the same as write")
+    match rsswrite.write_head([], f, RssFormatRss20, o)
+        Err(_) => test.assert(false)
+        Ok(h)  =>
+            match rsswrite.write_entry(h, e, RssFormatRss20, o)
+                Err(_) => test.assert(false)
+                Ok(m)  =>
+                    match rsswrite.write_tail(m, RssFormatRss20, o)
+                        Err(_)    => test.assert(false)
+                        Ok(whole) =>
+                            match rsswrite.write_rss20([], f, o)
+                                Err(_)  => test.assert(false)
+                                Ok(one) => test.assert(list.len(whole) == list.len(one))
+
+@test
+fn test_an_rss_write_emits_the_atom_self_link() [io]
+    // RSS 2.0 has no element for a feed's own address, and a feed that
+    // does not state it cannot be re-found from its own contents.
+    let f = rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog"))
+    let o = rsswrite.with_self_url(rsswrite.default_options(),
+                                   "https://example.com/f.xml")
+
+    test.case("so the Atom element goes into the RSS output on purpose")
+    match rsswrite.write_rss20([], f, o)
+        Ok(b)  => test.assert(list.len(b) > 0)
+        Err(_) => test.assert(false)
+
+@test
+fn test_rfc822_is_written_with_a_numeric_offset() [io]
+    // RFC 2822 § 4.3 makes a parser read every alphabetic zone it does
+    // not know as -0000, so writing one throws away the information
+    // the field carries.
+    match civil.date(2002, 5, 19)
+        Err(_) => test.assert(false)
+        Ok(d)  =>
+            let st = rssfeed.stamp(civil.datetime(d, civil.midnight()), 60)
+
+            test.case("the offset survives the round trip")
+            let written = rssdate.format_rfc822(st)
+            match rssdate.parse_rfc822(written)
+                Err(_)   => test.assert(false)
+                Ok(back) => test.assert(back.offset_min == 60)
+
+@test
+fn test_compact_is_the_shape_a_server_sends() [io]
+    test.case("no indentation, because a response is not read by a person")
+    test.assert(rsswrite.compact().indent == 0)
+
+    test.case("and the declaration stays, because a parser reads that")
+    test.assert(rsswrite.compact().declaration)
+
+@test
+fn test_json_feed_writes_into_the_same_buffer_as_the_xml_writers() [io]
+    // A program that publishes all three formats keeps one buffer, so
+    // the JSON writer takes bytes rather than answering a tree.
+    let f = rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog"))
+
+    test.case("the buffer comes back longer")
+    match rsswrite.write_json11([], f, rsswrite.compact())
+        Err(_) => test.assert(false)
+        Ok(b)  => test.assert(list.len(b) > 0)

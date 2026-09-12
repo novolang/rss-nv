@@ -1,0 +1,173 @@
+// rssjson.nv — JSON Feed 1.1, the third reader and the third writer.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE VALUE IS THE STANDARD LIBRARY'S, NOT A SECOND ONE.  `JsonValueH`
+// is what `std.json.parse` answers and what an HTTP body arrives as,
+// so a caller that fetched `application/feed+json` hands this module
+// exactly what it already has. Declaring a second JSON value here
+// would mean every caller converting between two trees that hold the
+// same thing.
+//
+// THE READER TAKES A VALUE AND THE WRITER TAKES A BUFFER, and the
+// asymmetry is on purpose. A reader's input has already been parsed by
+// whoever fetched it. A writer's output is bytes going into the same
+// buffer the XML writers append to, so a program that writes all three
+// formats writes them the same way and a caller building a 40 MB
+// archive keeps one buffer. `to_value` is there for the caller who
+// wants the tree instead — to merge it into a larger document, or to
+// hand it to a JSON Pointer — and it is a separate call rather than
+// the only one.
+//
+// WHAT JSON FEED CAN SAY THAT THE XML FORMATS CANNOT, and which is
+// therefore lost on the way out to RSS or Atom: `external_url`,
+// `banner_image`, an attachment's `duration_in_seconds`, an item's own
+// `language`, and `expired`. `rsswrite.writable` answers the list
+// before a caller commits to a format.
+//
+// WHAT THE XML FORMATS CAN SAY THAT JSON FEED CANNOT: a category's
+// `scheme`, a link's `hreflang`, `contributors`, `rights`, and any
+// `rel` other than `alternate` and `next`. The same call names those.
+
+use rsserror
+use rssfeed
+use rssread
+
+// The version strings this module reads: JSON Feed 1.0's
+// `https://jsonfeed.org/version/1` and 1.1's `…/1.1`.
+//
+// 1.0 is read as 1.1 with two differences the notes name: 1.0's
+// `author` object becomes a one-element `authors` list, and 1.0 does
+// not require an item `id`, so a 1.0 item without one takes a
+// synthetic id and files `RssNoteSyntheticId`.
+//
+// ```novo
+// use std.list
+// use rssjson
+//
+// fn main() [io]
+//     println("${list.len(rssjson.versions())}")
+// ```
+pub fn versions() -> [Str] []
+    todo("rss-nv.rssjson.versions")
+
+// A feed out of a parsed JSON value.
+//
+// ```novo
+// use rssjson
+// use rssread
+//
+// fn main() [io]
+//     match json.parse("{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\",\"items\":[]}")
+//         Some(v) =>
+//             match rssjson.read_value(v, rssread.default_options())
+//                 Ok(r)  => println(r.feed.title.text)
+//                 Err(_) => println("no")
+//         None => println("bad json")
+// ```
+pub fn read_value(root: JsonValueH,
+                  o: rssread.RssOptions) -> Result<rssread.RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssjson.read_value")
+
+// A feed out of JSON text — `std.json.parse` and then `read_value`,
+// with a parse failure reported as an `RssNotJsonFeed` fault rather
+// than a `None`.
+//
+// ```novo
+// use rssjson
+// use rssread
+//
+// fn main() [io]
+//     match rssjson.read_text("{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\"}",
+//                             rssread.default_options())
+//         Ok(r)  => println(r.feed.title.text)
+//         Err(_) => println("no")
+// ```
+pub fn read_text(source: Str,
+                 o: rssread.RssOptions) -> Result<rssread.RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssjson.read_text")
+
+// A feed as a JSON value, for a caller that wants the tree rather than
+// the bytes.
+//
+// ```novo
+// use rssjson
+// use rssfeed
+//
+// fn main() [io]
+//     match rssjson.to_value(rssfeed.empty_feed())
+//         Ok(v)  => println(json.stringify(v))
+//         Err(_) => println("no")
+// ```
+pub fn to_value(f: rssfeed.RssFeed) -> Result<JsonValueH, rsserror.RssFault> []
+    todo("rss-nv.rssjson.to_value")
+
+// One entry as a JSON Feed item value.
+//
+// What a caller appending to a feed it already published needs, so it
+// does not rebuild the whole document to add one post.
+//
+// ```novo
+// use rssjson
+// use rssfeed
+//
+// fn main() [io]
+//     match rssjson.entry_to_value(rssfeed.empty_entry())
+//         Ok(v)  => println(json.stringify(v))
+//         Err(_) => println("no")
+// ```
+pub fn entry_to_value(e: rssfeed.RssEntry) -> Result<JsonValueH, rsserror.RssFault> []
+    todo("rss-nv.rssjson.entry_to_value")
+
+// One JSON Feed item value as an entry.
+//
+// ```novo
+// use rssjson
+// use rssread
+//
+// fn main() [io]
+//     match json.parse("{\"id\":\"1\",\"title\":\"hi\"}")
+//         Some(v) =>
+//             match rssjson.entry_from_value(v, rssread.default_options())
+//                 Ok(e)  => println(e.id)
+//                 Err(_) => println("no")
+//         None => println("bad json")
+// ```
+pub fn entry_from_value(item: JsonValueH,
+                        o: rssread.RssOptions) -> Result<rssfeed.RssEntry, rsserror.RssFault> []
+    todo("rss-nv.rssjson.entry_from_value")
+
+// Whether `root` is a JSON Feed at all — a `version` member naming one
+// of `versions()`.
+//
+// The sniff a server does before deciding which reader to call, and
+// the check `read_value` makes first.
+//
+// ```novo
+// use rssjson
+//
+// fn main() [io]
+//     match json.parse("{\"version\":\"https://jsonfeed.org/version/1.1\"}")
+//         Some(v) => println("${rssjson.is_feed(v)}")
+//         None    => println("bad json")
+// ```
+pub fn is_feed(root: JsonValueH) -> Bool []
+    todo("rss-nv.rssjson.is_feed")
+
+// The JSON Feed members this package does not read, as RFC 6901 JSON
+// Pointers: the `_`-prefixed extension objects the specification
+// reserves for publishers, and `hubs`.
+//
+// Published as a list rather than left implicit so a publisher can
+// check, before shipping, whether the thing they put in their feed
+// will survive a round trip through this package.
+//
+// ```novo
+// use std.list
+// use rssjson
+//
+// fn main() [io]
+//     println("${list.len(rssjson.unread_members())}")
+// ```
+pub fn unread_members() -> [Str] []
+    todo("rss-nv.rssjson.unread_members")

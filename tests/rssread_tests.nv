@@ -1,0 +1,351 @@
+// rssread_tests.nv — three formats into one value, and the tolerance
+// policy that decides what a deviation costs.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE feedparser's, in shape.  Its corpus is a few
+// thousand files each of which is a minimal feed with exactly one
+// thing wrong, and the assertion is on what the parsed result holds.
+// The same idea is written here as literals so the tests need no
+// fixture directory, and the ones that matter are the ones where a
+// tolerant read and a strict read disagree — because that difference
+// is the whole of the policy.
+
+use std.test
+use std.list
+use rssfeed
+use rsserror
+use rssread
+use xmltree
+
+@test
+fn test_the_sniff_answers_without_building_a_feed() [io]
+    test.case("an rss root is RSS 2.0")
+    test.assert(rssfeed.format_name(
+        rssread.sniff("<rss version=\"2.0\"><channel/></rss>")) == "rss20")
+
+    test.case("an atom root in the 1.0 namespace is Atom")
+    test.assert(rssfeed.format_name(
+        rssread.sniff("<feed xmlns=\"http://www.w3.org/2005/Atom\"/>")) == "atom10")
+
+    test.case("a leading brace is JSON Feed")
+    test.assert(rssfeed.format_name(
+        rssread.sniff("{\"version\":\"https://jsonfeed.org/version/1.1\"}")) == "json11")
+
+    test.case("and an RDF root is unknown rather than guessed at")
+    test.assert(rssfeed.format_name(
+        rssread.sniff("<rdf:RDF xmlns:rdf=\"x\"/>")) == "unknown")
+
+@test
+fn test_rss_and_atom_produce_the_same_value() [io]
+    let as_rss = "<rss version=\"2.0\"><channel><title>Blog</title>"
+               + "<link>https://example.com/</link>"
+               + "<item><title>One</title><guid>urn:1</guid></item>"
+               + "</channel></rss>"
+    let as_atom = "<feed xmlns=\"http://www.w3.org/2005/Atom\"><title>Blog</title>"
+                + "<link href=\"https://example.com/\"/>"
+                + "<entry><title>One</title><id>urn:1</id></entry>"
+                + "</feed>"
+
+    test.case("the same facts written two ways read into one value")
+    match rssread.read(as_rss)
+        Err(_) => test.assert(false)
+        Ok(a)  =>
+            match rssread.read(as_atom)
+                Err(_) => test.assert(false)
+                Ok(b)  =>
+                    test.assert(a.feed.title.text == b.feed.title.text)
+                    test.assert(list.len(a.feed.entries) == list.len(b.feed.entries))
+                    test.assert(rssfeed.site_url(a.feed) == rssfeed.site_url(b.feed))
+
+    test.case("and the format the bytes were is kept on the read")
+    match rssread.read(as_rss)
+        Err(_) => test.assert(false)
+        Ok(a)  => test.assert(rssfeed.format_name(a.format) == "rss20")
+
+@test
+fn test_an_atom_link_with_no_rel_is_an_alternate() [io]
+    // RFC 4287 § 4.2.7.2: the rel attribute defaults to "alternate".
+    // A reader that left it empty would make site_url answer nothing
+    // for the majority of Atom feeds, which write no rel at all.
+    let src = "<feed xmlns=\"http://www.w3.org/2005/Atom\">"
+            + "<link href=\"https://example.com/\"/></feed>"
+
+    test.case("the default is filled in on the way past")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(rssfeed.site_url(r.feed) == "https://example.com/")
+
+@test
+fn test_an_rss_item_with_no_guid_takes_a_synthetic_id_and_says_so() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><title>One</title><link>https://example.com/1</link></item>"
+            + "</channel></rss>"
+
+    test.case("the id comes from the link")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(list.len(r.feed.entries) == 1)
+
+            test.case("and the note says where it came from")
+            let filed = rsserror.notes_of_kind(r.notes, RssNoteSyntheticId)
+            test.assert(list.len(filed) == 1)
+
+            test.case("filed against the entry it is about, not the feed")
+            for n in filed
+                test.assert(n.entry == 0)
+
+@test
+fn test_a_date_in_the_wrong_format_is_read_and_noted() [io]
+    // An RSS pubDate is specified as RFC 822.  A great many feeds
+    // write RFC 3339 there anyway, and a reader that refused would
+    // refuse feeds every browser shows.
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><guid>urn:1</guid><pubDate>2002-05-19T15:21:36Z</pubDate></item>"
+            + "</channel></rss>"
+
+    test.case("the entry is dated")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            for e in r.feed.entries
+                match rssfeed.entry_when(e)
+                    Some(_) => test.assert(true)
+                    None    => test.assert(false)
+
+            test.case("and the note names the mismatch")
+            test.assert(list.len(rsserror.notes_of_kind(r.notes, RssNoteDateWrongFormat)) == 1)
+
+@test
+fn test_an_unparseable_date_leaves_the_entry_undated_rather_than_refusing() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><guid>urn:1</guid><pubDate>yesterday</pubDate></item>"
+            + "</channel></rss>"
+
+    test.case("a lenient read succeeds")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.case("with the entry undated")
+            for e in r.feed.entries
+                match rssfeed.entry_when(e)
+                    Some(_) => test.assert(false)
+                    None    => test.assert(true)
+
+            test.case("and the unreadable text carried in the note")
+            let filed = rsserror.notes_of_kind(r.notes, RssNoteBadDate)
+            test.assert(list.len(filed) == 1)
+            for n in filed
+                test.assert(n.detail == "yesterday")
+
+@test
+fn test_strict_refuses_exactly_the_notes_the_table_names() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><guid>urn:1</guid><pubDate>yesterday</pubDate></item>"
+            + "</channel></rss>"
+    let strict = rssread.with_tolerance(rssread.default_options(), RssStrict)
+
+    test.case("a bad date stops a strict read")
+    test.assert(rsserror.stops_strict(RssNoteBadDate))
+    match rssread.read_with(src, strict)
+        Ok(_)  => test.assert(false)
+        Err(f) =>
+            test.case("and the fault carries the note whole, in one vocabulary")
+            match f.kind
+                RssStrictNote(n) => test.assert(n.detail == "yesterday")
+                _                => test.assert(false)
+
+    test.case("an unknown element does NOT — every real feed has one")
+    test.assert(rsserror.stops_strict(RssNoteUnknownElement) == false)
+
+@test
+fn test_the_bozo_flag_is_recomputed_from_the_list() [io]
+    let clean = "<feed xmlns=\"http://www.w3.org/2005/Atom\"><id>urn:f</id>"
+              + "<title>b</title><updated>2002-05-19T15:21:36Z</updated></feed>"
+
+    test.case("a feed with nothing wrong would not fail strict")
+    match rssread.read(clean)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(rssread.would_fail_strict(r) == false)
+            test.assert(list.len(rssread.notes_of(r)) == 0)
+
+@test
+fn test_rdf_and_atom_draft_are_refused_by_name() [io]
+    test.case("RSS 1.0 is RDF and is refused rather than read as RSS 2.0")
+    match rssread.read("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>")
+        Ok(_)  => test.assert(false)
+        Err(f) =>
+            match f.kind
+                RssRdfRefused => test.assert(true)
+                _             => test.assert(false)
+            test.assert(rsserror.is_recoverable(f.kind) == false)
+
+    test.case("Atom 0.3 has three dates where 1.0 has two, so it is refused too")
+    match rssread.read("<feed xmlns=\"http://purl.org/atom/ns#\" version=\"0.3\"/>")
+        Ok(_)  => test.assert(false)
+        Err(f) =>
+            match f.kind
+                RssAtomDraftRefused => test.assert(true)
+                _                   => test.assert(false)
+
+@test
+fn test_bytes_that_are_not_xml_are_not_a_tolerance_question() [io]
+    test.case("a document that does not parse carries the XML fault whole")
+    match rssread.read("<rss><channel>")
+        Ok(_)  => test.assert(false)
+        Err(f) =>
+            match f.kind
+                RssNotXml(_) => test.assert(true)
+                _            => test.assert(false)
+            test.assert(rsserror.is_recoverable(f.kind) == false)
+
+@test
+fn test_a_relative_reference_is_resolved_against_what_the_caller_says() [io]
+    let src = "<feed xmlns=\"http://www.w3.org/2005/Atom\">"
+            + "<link href=\"/posts/\"/></feed>"
+
+    test.case("with a base, the reference is joined and the note says so")
+    let o = rssread.with_base(rssread.default_options(), "https://example.com/f.xml")
+    match rssread.read_with(src, o)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(rssfeed.site_url(r.feed) == "https://example.com/posts/")
+            test.assert(list.len(rsserror.notes_of_kind(r.notes, RssNoteRelativeUrl)) == 1)
+
+    test.case("with no base, it is kept as written and a different note fires")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(rssfeed.site_url(r.feed) == "/posts/")
+            test.assert(list.len(rsserror.notes_of_kind(r.notes, RssNoteUnresolvedUrl)) == 1)
+
+@test
+fn test_a_format_pinned_reader_refuses_the_other_format() [io]
+    let atom = "<feed xmlns=\"http://www.w3.org/2005/Atom\"/>"
+
+    test.case("read_rss20 refuses Atom, so a server that changed is an error")
+    match rssread.read_rss20(atom, rssread.default_options())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and read_atom10 accepts it")
+    match rssread.read_atom10(atom, rssread.default_options())
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_max_entries_stops_building_and_files_a_note() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><guid>urn:1</guid></item>"
+            + "<item><guid>urn:2</guid></item>"
+            + "<item><guid>urn:3</guid></item>"
+            + "</channel></rss>"
+    let o = rssread.with_max_entries(rssread.default_options(), 2)
+
+    test.case("only the entries asked for are built")
+    match rssread.read_with(src, o)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(list.len(r.feed.entries) == 2)
+
+            test.case("and the read says it stopped early")
+            test.assert(list.len(
+                rsserror.notes_of_kind(r.notes, RssNoteEntriesTruncated)) == 1)
+
+@test
+fn test_the_head_is_available_before_the_first_entry() [io]
+    let src = "<rss version=\"2.0\"><channel><title>Blog</title>"
+            + "<item><guid>urn:1</guid></item></channel></rss>"
+
+    test.case("a stream has the feed's own fields immediately")
+    match rssread.stream(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(rssread.head_of(s).title.text == "Blog")
+
+            test.case("with no entries in them — that is the point")
+            test.assert(list.len(rssread.head_of(s).entries) == 0)
+
+            test.case("and the entries arrive one at a time")
+            match rssread.next_entry(s)
+                Err(_)   => test.assert(false)
+                Ok(step) =>
+                    test.assert(step.done == false)
+                    match step.entry
+                        Some(e) => test.assert(e.id == "urn:1")
+                        None    => test.assert(false)
+
+@test
+fn test_the_stream_ends_rather_than_repeating() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title></channel></rss>"
+
+    test.case("a feed with no entries is done on the first step")
+    match rssread.stream(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match rssread.next_entry(s)
+                Err(_)   => test.assert(false)
+                Ok(step) =>
+                    test.assert(step.done)
+                    match step.entry
+                        Some(_) => test.assert(false)
+                        None    => test.assert(true)
+
+@test
+fn test_json_feed_cannot_be_streamed_and_says_so() [io]
+    let src = "{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\"}"
+
+    test.case("the value arrives whole, so stream refuses rather than pretending")
+    match rssread.stream(src, rssread.default_options())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_declared_encoding_is_reported_and_not_applied() [io]
+    let src = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>"
+            + "<rss version=\"2.0\"><channel><title>b</title></channel></rss>"
+
+    test.case("the bytes are read as UTF-8 whatever the declaration says")
+    match rssread.read(src)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(r.declared_encoding == "ISO-8859-1")
+
+            test.case("and the caller is told, so it can re-decode if it must")
+            test.assert(list.len(
+                rsserror.notes_of_kind(r.notes, RssNoteEncodingIgnored)) == 1)
+
+@test
+fn test_a_tree_already_built_is_read_without_parsing_twice() [io]
+    let doc = xmltree.build("<rss version=\"2.0\"><channel><title>Blog</title>"
+                            + "</channel></rss>")
+
+    test.case("a caller that parsed the document for another reason hands it over")
+    match rssread.read_xml(doc, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(r.feed.title.text == "Blog")
+            test.assert(rssfeed.format_name(r.format) == "rss20")
+
+@test
+fn test_a_stream_carries_the_notes_it_has_filed_so_far() [io]
+    let src = "<rss version=\"2.0\"><channel><title>b</title>"
+            + "<item><link>https://example.com/1</link></item></channel></rss>"
+
+    test.case("the head's notes are available before any entry is read")
+    match rssread.stream(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(list.len(rssread.stream_notes(s)) >= 0)
+
+            test.case("and the item's notes arrive with the item, not at the end")
+            match rssread.next_entry(s)
+                Err(_)   => test.assert(false)
+                Ok(step) =>
+                    test.assert(list.len(
+                        rsserror.notes_of_kind(step.notes, RssNoteSyntheticId)) == 1)

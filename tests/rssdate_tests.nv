@@ -1,0 +1,162 @@
+// rssdate_tests.nv — the date strings feeds actually carry.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE feedparser's OWN, from its date-parsing suite, which
+// is the part of feedparser with the widest test coverage because it
+// is the part every feed in the world stresses differently.  The
+// strings below are the shapes that suite covers; each one either
+// parses or is a named refusal, and nothing here is "roughly right".
+
+use std.test
+use std.list
+use rssdate
+
+@test
+fn test_rfc822_is_the_format_rss_specifies() [io]
+    test.case("the canonical shape, with a day name and an alphabetic zone")
+    match rssdate.parse_rfc822("Sun, 19 May 2002 15:21:36 GMT")
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(s.offset_min == 0)
+            test.assert(s.at.date.year == 2002)
+
+    test.case("the day name is optional")
+    match rssdate.parse_rfc822("19 May 2002 15:21:36 GMT")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    test.case("a numeric offset is kept rather than normalised away")
+    match rssdate.parse_rfc822("Sun, 19 May 2002 15:21:36 -0800")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(s.offset_min == 0 - 480)
+
+@test
+fn test_a_wrong_day_name_does_not_reject_a_right_date() [io]
+    // 19 May 2002 was a Sunday.  A feed that writes Monday has a wrong
+    // day name and a right date far more often than the reverse, so
+    // the name is not checked against the date.
+    test.case("the date wins")
+    match rssdate.parse_rfc822("Mon, 19 May 2002 15:21:36 GMT")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(s.at.date.day == 19)
+
+@test
+fn test_a_two_digit_year_widens_under_rfc_2822() [io]
+    test.case("00 to 49 are this century")
+    test.assert(rssdate.widen_year(2) == 2002)
+
+    test.case("50 to 99 are the last one")
+    test.assert(rssdate.widen_year(97) == 1997)
+
+    test.case("and the rule is published rather than buried, because it is a guess")
+    match rssdate.parse_rfc822("Sun, 19 May 02 15:21:36 GMT")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(s.at.date.year == 2002)
+
+@test
+fn test_the_alphabetic_zone_table_is_rfc_2822s() [io]
+    test.case("UT and GMT are zero")
+    match rssdate.zone_offset("UT")
+        Some(m) => test.assert(m == 0)
+        None    => test.assert(false)
+    match rssdate.zone_offset("GMT")
+        Some(m) => test.assert(m == 0)
+        None    => test.assert(false)
+
+    test.case("the four North American pairs are what they are")
+    match rssdate.zone_offset("EST")
+        Some(m) => test.assert(m == 0 - 300)
+        None    => test.assert(false)
+    match rssdate.zone_offset("PDT")
+        Some(m) => test.assert(m == 0 - 420)
+        None    => test.assert(false)
+
+    test.case("and anything else is None, so the reader files a note rather than guessing")
+    match rssdate.zone_offset("CEST")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_rfc3339_is_the_format_atom_and_json_feed_specify() [io]
+    test.case("Z is zero")
+    match rssdate.parse_rfc3339("2002-05-19T15:21:36Z")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(s.offset_min == 0)
+
+    test.case("and an explicit offset is kept as written")
+    match rssdate.parse_rfc3339("2002-05-19T15:21:36-08:00")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(s.offset_min == 0 - 480)
+
+@test
+fn test_parse_any_reads_both_and_says_which() [io]
+    test.case("the list of shapes is the contract, not a private detail")
+    test.assert(list.len(rssdate.formats()) > 0)
+
+    test.case("an RFC 3339 string in an RSS feed parses")
+    match rssdate.parse_any("2002-05-19T15:21:36Z")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    test.case("an RFC 822 string in an Atom feed parses")
+    match rssdate.parse_any("Sun, 19 May 2002 15:21:36 GMT")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    test.case("and shape_of names which one matched, as an index into formats()")
+    match rssdate.shape_of("2002-05-19T15:21:36Z")
+        Some(i) => test.assert(i < list.len(rssdate.formats()))
+        None    => test.assert(false)
+
+@test
+fn test_a_string_that_is_not_a_date_is_refused_rather_than_guessed_at() [io]
+    test.case("prose is not a date")
+    match rssdate.parse_any("yesterday")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("an empty string is not a date")
+    match rssdate.parse_any("")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and shape_of agrees with parse_any about both")
+    match rssdate.shape_of("yesterday")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_the_printers_round_trip_the_offset() [io]
+    test.case("RFC 822 out and back")
+    match rssdate.parse_rfc822("Sun, 19 May 2002 15:21:36 +0130")
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(s.offset_min == 90)
+            match rssdate.parse_rfc822(rssdate.format_rfc822(s))
+                Err(_)   => test.assert(false)
+                Ok(back) => test.assert(back.offset_min == 90)
+
+    test.case("RFC 3339 out and back")
+    match rssdate.parse_rfc3339("2002-05-19T15:21:36+01:30")
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match rssdate.parse_rfc3339(rssdate.format_rfc3339(s))
+                Err(_)   => test.assert(false)
+                Ok(back) => test.assert(back.offset_min == 90)
+
+@test
+fn test_the_instant_is_the_wall_clock_moved_by_the_offset() [io]
+    test.case("two spellings of one moment give one epoch second")
+    match rssdate.parse_rfc3339("2002-05-19T15:21:36Z")
+        Err(_) => test.assert(false)
+        Ok(z)  =>
+            match rssdate.parse_rfc3339("2002-05-19T16:21:36+01:00")
+                Err(_)   => test.assert(false)
+                Ok(east) =>
+                    test.assert(rssdate.epoch_seconds(z) == rssdate.epoch_seconds(east))
+
+                    test.case("and the two stamps are still different values")
+                    test.assert(z.offset_min != east.offset_min)

@@ -1,0 +1,160 @@
+// rssjson_tests.nv — JSON Feed 1.1, and what does not survive the
+// trip to and from the XML formats.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE THE SPECIFICATION'S OWN EXAMPLES.  JSON Feed 1.1 is
+// short enough that its examples cover most of it, and the ones worth
+// asserting are the places it differs from the XML formats: an item
+// `id` is required, `content_text` and `content_html` are two members
+// rather than one with a type, and 1.0's singular `author` became
+// 1.1's `authors` list.
+
+use std.test
+use std.list
+use rssfeed
+use rssjson
+use rssread
+
+@test
+fn test_a_json_feed_is_recognised_by_its_version_member() [io]
+    test.case("1.1 is read")
+    match json.parse("{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\"}")
+        None    => test.assert(false)
+        Some(v) => test.assert(rssjson.is_feed(v))
+
+    test.case("1.0 is read too — two named differences, both noted")
+    match json.parse("{\"version\":\"https://jsonfeed.org/version/1\",\"title\":\"b\"}")
+        None    => test.assert(false)
+        Some(v) => test.assert(rssjson.is_feed(v))
+
+    test.case("both are in versions(), which is the list of what is read")
+    test.assert(list.len(rssjson.versions()) == 2)
+
+    test.case("and a JSON object with no version is not a feed")
+    match json.parse("{\"title\":\"b\"}")
+        None    => test.assert(false)
+        Some(v) => test.assert(rssjson.is_feed(v) == false)
+
+@test
+fn test_a_value_with_no_version_is_refused_by_name() [io]
+    match json.parse("{\"title\":\"b\",\"items\":[]}")
+        None    => test.assert(false)
+        Some(v) =>
+            test.case("without it, the value is some other JSON object entirely")
+            match rssjson.read_value(v, rssread.default_options())
+                Ok(_)  => test.assert(false)
+                Err(f) =>
+                    match f.kind
+                        RssNotJsonFeed(_) => test.assert(true)
+                        _                 => test.assert(false)
+
+@test
+fn test_content_text_and_content_html_land_on_one_field_with_a_kind() [io]
+    let src = "{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\","
+            + "\"items\":[{\"id\":\"1\",\"content_html\":\"<p>hi</p>\"}]}"
+
+    test.case("content_html is HTML, and the kind says so")
+    match rssjson.read_text(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            for e in r.feed.entries
+                test.assert(rssfeed.text_is_markup(rssfeed.entry_body(e)))
+
+    let plainsrc = "{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"b\","
+                 + "\"items\":[{\"id\":\"1\",\"content_text\":\"hi\"}]}"
+
+    test.case("content_text is characters, and the kind says that")
+    match rssjson.read_text(plainsrc, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            for e in r.feed.entries
+                test.assert(rssfeed.text_is_markup(rssfeed.entry_body(e)) == false)
+
+@test
+fn test_a_json_feed_reads_into_the_same_value_the_xml_readers_produce() [io]
+    let src = "{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":\"Blog\","
+            + "\"home_page_url\":\"https://example.com/\","
+            + "\"items\":[{\"id\":\"urn:1\",\"title\":\"One\","
+            + "\"url\":\"https://example.com/1\"}]}"
+
+    test.case("the fields land where the XML readers put them")
+    match rssjson.read_text(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.assert(r.feed.title.text == "Blog")
+            test.assert(rssfeed.site_url(r.feed) == "https://example.com/")
+            test.assert(list.len(r.feed.entries) == 1)
+            for e in r.feed.entries
+                test.assert(e.id == "urn:1")
+                test.assert(rssfeed.entry_url(e) == "https://example.com/1")
+
+    test.case("and the format on the read says which it was")
+    match rssjson.read_text(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(rssfeed.format_name(r.format) == "json11")
+
+@test
+fn test_an_item_without_an_id_is_noted_rather_than_dropped() [io]
+    // 1.1 requires an item id; plenty of feeds published against 1.0
+    // do not have one, and dropping those items would make the feed
+    // look empty.
+    let src = "{\"version\":\"https://jsonfeed.org/version/1\",\"title\":\"b\","
+            + "\"items\":[{\"title\":\"One\",\"url\":\"https://example.com/1\"}]}"
+
+    match rssjson.read_text(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.case("the item is kept")
+            test.assert(list.len(r.feed.entries) == 1)
+
+            test.case("and the read says an id was invented")
+            test.assert(list.len(r.notes) > 0)
+
+@test
+fn test_a_member_of_the_wrong_type_is_skipped_and_noted() [io]
+    let src = "{\"version\":\"https://jsonfeed.org/version/1.1\",\"title\":42}"
+
+    test.case("a lenient read keeps going")
+    match rssjson.read_text(src, rssread.default_options())
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(list.len(r.notes) > 0)
+
+    test.case("and a strict one refuses, naming the member as a JSON Pointer")
+    let strict = rssread.with_tolerance(rssread.default_options(), RssStrict)
+    match rssjson.read_text(src, strict)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_feed_goes_back_out_as_a_json_value_and_as_bytes() [io]
+    let f = rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog"))
+
+    test.case("to_value hands back the tree, for a caller merging it into a document")
+    match rssjson.to_value(f)
+        Ok(v)  => test.assert(json.stringify(v) != "")
+        Err(_) => test.assert(false)
+
+    test.case("and one entry goes out on its own, for an append")
+    match rssjson.entry_to_value(rssfeed.empty_entry())
+        Ok(v)  => test.assert(json.stringify(v) != "")
+        Err(_) => test.assert(false)
+
+@test
+fn test_what_does_not_survive_a_round_trip_is_published_as_a_list() [io]
+    test.case("so a publisher can check before shipping, rather than after")
+    test.assert(list.len(rssjson.unread_members()) > 0)
+
+@test
+fn test_one_item_reads_on_its_own_for_an_incremental_consumer() [io]
+    match json.parse("{\"id\":\"urn:1\",\"title\":\"One\",\"content_text\":\"hi\"}")
+        None    => test.assert(false)
+        Some(v) =>
+            test.case("an item value becomes an entry without a feed around it")
+            match rssjson.entry_from_value(v, rssread.default_options())
+                Err(_) => test.assert(false)
+                Ok(e)  =>
+                    test.assert(e.id == "urn:1")
+                    test.assert(e.title.text == "One")

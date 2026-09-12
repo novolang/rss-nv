@@ -1,0 +1,304 @@
+// rsserror.nv — one vocabulary for everything that can be wrong with a
+// feed, split by whether it stopped the read.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A NOTE AND A FAULT ARE ONE VOCABULARY, AND THE SPLIT IS THE POLICY.
+// feedparser has a single `bozo` flag and a single `bozo_exception`,
+// and that is the thing about feedparser most often wished otherwise:
+// a feed with nine small deviations and a feed with one fatal one both
+// come back with `bozo = 1` and one exception, so a consumer cannot
+// tell "I repaired nine things" from "I gave up". Here the read
+// answers a LIST of notes and, separately, a `Result` — so a caller
+// learns everything that was odd AND still gets the feed, and a
+// caller that wants feedparser's strictness sets
+// `rssread.RssStrict` and the same list comes back as the first fault
+// instead.
+//
+// `stops_strict` is the bridge: it is a total function from a note
+// kind to whether strict mode turns that note into a fault, so the
+// policy is one table rather than a branch in each of three readers.
+//
+// EVERY FAULT NAMES A BYTE OFFSET AND AN ENTRY INDEX.  A feed is a
+// list of items and "bad date" is not actionable; "bad date, item 41,
+// byte 91 200" is. `entry` is `-1` for something wrong with the feed
+// itself rather than with one of its items.
+
+use rssfeed
+use xmlerror
+
+// What a reader repaired, guessed at or ignored.
+//
+// Every one of these is something feedparser does silently. Naming
+// them is the point: a publisher can act on the list, and a consumer
+// can decide which of them it minds.
+pub enum RssNoteKind
+    // An element or attribute this package does not read was present
+    // and was skipped. The commonest note by far, and harmless.
+    RssNoteUnknownElement
+    // A date string matched none of `rssdate.formats()`, so the stamp
+    // is `None`. The text is in the note's `detail`.
+    RssNoteBadDate
+    // A date was in one of the shapes that is not the format the
+    // element is specified to use — an RFC 3339 stamp in an RSS
+    // `<pubDate>`, an RFC 822 one in an Atom `atom:updated` — and was
+    // read anyway.
+    RssNoteDateWrongFormat
+    // A two-digit year was widened; RFC 822 allows one and every
+    // widening rule is somebody's guess.
+    RssNoteTwoDigitYear
+    // An alphabetic time zone outside `UT`, `GMT` and the four North
+    // American pairs was read as `+0000`, which is what RFC 822 § 5.2
+    // says to do with one and which is wrong for the feed's author.
+    RssNoteUnknownTimezone
+    // A reference was relative and was resolved against the base in
+    // effect. `detail` holds the reference as written.
+    RssNoteRelativeUrl
+    // A reference was relative and there was no base to resolve it
+    // against, so it was kept as written.
+    RssNoteUnresolvedUrl
+    // An RSS item had no `<guid>`, so the id was taken from its
+    // `<link>`, or left empty when it had none either.
+    RssNoteSyntheticId
+    // Two entries had the same id. Both are kept, in the order they
+    // arrived, because deciding which one wins is the consumer's.
+    RssNoteDuplicateId
+    // An entity reference that XML does not define and this package
+    // does not expand was left as written. HTML's 2 231 named
+    // references are html-nv's table, not this package's.
+    RssNoteUndeclaredEntity
+    // An RSS `<description>` was taken as HTML on the convention that
+    // it is, with nothing in the feed saying so.
+    RssNoteContentTypeGuessed
+    // An element was in a namespace that is not the one the format
+    // specifies and was read anyway — the commonest being an Atom
+    // feed served in the Atom 0.3 namespace with 1.0 content.
+    RssNoteMismatchedNamespace
+    // An `<author>`'s `address (Name)` shape was split into an address
+    // and a name.
+    RssNoteAuthorSplit
+    // The feed carried more entries than `RssOptions.max_entries`, and
+    // the rest were dropped.
+    RssNoteEntriesTruncated
+    // A required element was missing and an empty value stands in:
+    // Atom's `atom:id`, `atom:title` or `atom:updated`, RSS's
+    // `<title>`, `<link>` or `<description>`, JSON Feed's `version`,
+    // `title` or an item's `id`.
+    RssNoteMissingRequired
+    // A JSON Feed member had a type the specification does not give it
+    // — a number where a string belongs — and was skipped.
+    RssNoteJsonTypeMismatch
+    // The document declared an encoding other than UTF-8. Nothing is
+    // transcoded; the bytes were read as UTF-8 anyway.
+    RssNoteEncodingIgnored
+
+// One thing a reader repaired, guessed at or ignored.
+pub struct RssNote
+    // Which of the above.
+    kind: RssNoteKind
+    // Byte offset into the source the note is about, or `0` for a JSON
+    // feed, whose value arrives already parsed and carries no offsets.
+    at: Int
+    // Index into `RssFeed.entries` the note is about, or `-1` when it
+    // is about the feed itself.
+    entry: Int
+    // The text the note is about — the unparseable date, the relative
+    // reference, the unknown element's name — or empty.
+    detail: Str
+
+// Why a read or a write stopped.
+pub enum RssFaultKind
+    // The bytes are not well-formed XML. The XML fault says where and
+    // what; this package does not second-guess it, because a document
+    // that is not XML is the one thing no amount of tolerance repairs.
+    RssNotXml(cause: xmlerror.XmlFault)
+    // The document is XML but its root element is neither `<rss>`,
+    // `<feed>` nor `<rdf:RDF>`.
+    RssNoFeedElement(root: Str)
+    // The root is `<rdf:RDF>`: RSS 1.0. Refused by name rather than
+    // approximated — it is an RDF vocabulary, its items are siblings
+    // of the channel rather than children of it, and reading it as
+    // RSS 2.0 silently produces a feed with no entries.
+    RssRdfRefused
+    // The root is `<feed>` in the Atom 0.3 namespace. Refused by name:
+    // 0.3's `<issued>`, `<modified>` and `<created>` are three
+    // different dates from 1.0's two, and mapping them is a guess that
+    // would be wrong for half of the feeds that still exist.
+    RssAtomDraftRefused
+    // An `<rss version=…>` this package does not read. 0.90 is the RDF
+    // one; anything above 2.0 does not exist.
+    RssUnsupportedVersion(found: Str)
+    // The JSON value is not a JSON Feed: no `version` member, or a
+    // `version` naming something other than JSON Feed 1.0 or 1.1.
+    RssNotJsonFeed(found: Str)
+    // A JSON Feed member had the wrong JSON type and the read was
+    // strict. `pointer` is an RFC 6901 JSON Pointer at the member.
+    RssBadJsonMember(pointer: Str, wanted: Str)
+    // A note fired and the read was `RssStrict`. The note is carried
+    // whole, so a caller that flipped to strict to find out what was
+    // wrong is told exactly what, in the same vocabulary the lenient
+    // read would have used.
+    RssStrictNote(note: RssNote)
+    // The source was longer than `RssOptions.max_bytes`.
+    RssTooLarge(limit: Int)
+    // Nesting went deeper than `RssOptions.max_depth`. A feed is three
+    // levels deep and a document that is a thousand is an attack.
+    RssTooDeep(limit: Int)
+    // A write was asked for a feed the target format cannot carry.
+    // `field` names the field and the message says what is lost —
+    // `writable` answers the whole list before a caller commits.
+    RssNotWritable(field: Str, target: rssfeed.RssFormat)
+    // A write was given a string XML cannot hold: a code point XML 1.0
+    // § 2.2 excludes, which has no escape and so cannot be written.
+    RssUnescapable(at: Int)
+
+// Why a read or a write stopped, and where.
+pub struct RssFault
+    // Which of the above.
+    kind: RssFaultKind
+    // Byte offset into the source, or `0` when there is none.
+    at: Int
+    // Index into `RssFeed.entries`, or `-1` for the feed itself.
+    entry: Int
+
+// A fault, built.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println("${rsserror.fault(RssRdfRefused, 0, 0 - 1).at}")
+// ```
+pub fn fault(kind: RssFaultKind, at: Int, entry: Int) -> RssFault []
+    todo("rss-nv.rsserror.fault")
+
+// A note, built.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println(rsserror.note(RssNoteBadDate, 12, 0, "yesterday").detail)
+// ```
+pub fn note(kind: RssNoteKind, at: Int, entry: Int, detail: Str) -> RssNote []
+    todo("rss-nv.rsserror.note")
+
+// Whether `RssStrict` turns a note of this kind into a fault.
+//
+// The table, and the whole of the tolerance policy. `RssNoteUnknownElement`
+// is false — an unknown element is not an error in any of the three
+// formats, and a strict mode that refused one would refuse every feed
+// that carries an iTunes or a Dublin Core extension, which is most of
+// them. `RssNoteBadDate` and `RssNoteMissingRequired` are true.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println("${rsserror.stops_strict(RssNoteUnknownElement)}")
+// ```
+pub fn stops_strict(kind: RssNoteKind) -> Bool []
+    todo("rss-nv.rsserror.stops_strict")
+
+// The note kinds `stops_strict` answers true for, as a list — what a
+// README, a `--help` or a linting tool prints so a publisher knows in
+// advance what a strict reader will refuse.
+//
+// ```novo
+// use std.list
+// use rsserror
+//
+// fn main() [io]
+//     println("${list.len(rsserror.strict_kinds())}")
+// ```
+pub fn strict_kinds() -> [RssNoteKind] []
+    todo("rss-nv.rsserror.strict_kinds")
+
+// The short name of a note kind, for a log line: `bad-date`,
+// `relative-url`, `synthetic-id`.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println(rsserror.note_name(RssNoteBadDate))
+// ```
+pub fn note_name(kind: RssNoteKind) -> Str []
+    todo("rss-nv.rsserror.note_name")
+
+// One line a person can act on: what was odd, where, and what the
+// reader did about it.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println(rsserror.note_text(rsserror.note(RssNoteBadDate, 12, 3, "yesterday")))
+// ```
+pub fn note_text(n: RssNote) -> Str []
+    todo("rss-nv.rsserror.note_text")
+
+// The short name of a fault kind: `not-xml`, `rdf-refused`,
+// `not-writable`.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println(rsserror.kind_name(RssRdfRefused))
+// ```
+pub fn kind_name(kind: RssFaultKind) -> Str []
+    todo("rss-nv.rsserror.kind_name")
+
+// One line a person can act on, naming the byte offset and the entry.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println(rsserror.message(rsserror.fault(RssRdfRefused, 0, 0 - 1)))
+// ```
+pub fn message(f: RssFault) -> Str []
+    todo("rss-nv.rsserror.message")
+
+// Whether a lenient read could have continued past a fault of this
+// kind. False for `RssNotXml`, `RssRdfRefused`, `RssAtomDraftRefused`
+// and `RssNotJsonFeed`; true for the rest, which is how `read_with`
+// decides whether a strict refusal is worth retrying leniently.
+//
+// ```novo
+// use rsserror
+//
+// fn main() [io]
+//     println("${rsserror.is_recoverable(RssRdfRefused)}")
+// ```
+pub fn is_recoverable(kind: RssFaultKind) -> Bool []
+    todo("rss-nv.rsserror.is_recoverable")
+
+// The notes in `notes` whose `entry` is `index`, in order.
+//
+// What a consumer showing one item asks so it can put "this item's
+// date could not be read" next to the item rather than at the top of
+// the page.
+//
+// ```novo
+// use std.list
+// use rsserror
+//
+// fn main() [io]
+//     println("${list.len(rsserror.notes_for_entry([], 0))}")
+// ```
+pub fn notes_for_entry(notes: [RssNote], index: Int) -> [RssNote] []
+    todo("rss-nv.rsserror.notes_for_entry")
+
+// The notes in `notes` whose kind is `kind`, in order.
+//
+// ```novo
+// use std.list
+// use rsserror
+//
+// fn main() [io]
+//     println("${list.len(rsserror.notes_of_kind([], RssNoteBadDate))}")
+// ```
+pub fn notes_of_kind(notes: [RssNote], kind: RssNoteKind) -> [RssNote] []
+    todo("rss-nv.rsserror.notes_of_kind")

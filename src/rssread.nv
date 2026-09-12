@@ -1,0 +1,380 @@
+// rssread.nv — bytes in, one feed value and a list of notes out.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE TOLERANCE IS AN ENUM AND THE REPAIRS ARE A LIST.  `RssLenient`
+// reads what a browser would render and files an `rsserror.RssNote`
+// for every place it had to decide something; `RssStrict` turns the
+// first note whose kind `rsserror.stops_strict` answers true for into
+// a fault. Both answer a `Result`, because a document that is not XML
+// at all is not a tolerance question.
+//
+// The default is `RssLenient`, and the argument for that default is
+// arithmetic rather than taste: a survey of feeds in the wild finds
+// something a strict reader objects to in the clear majority of them,
+// and a feed reader that refused those would be a feed reader nobody
+// could use. The notes are what keeps lenient from meaning silent.
+//
+// FOUR DOORS, AND THE THIRD IS THE STREAMING ONE.
+//
+//   `read`         bytes → feed.  What most callers want.
+//   `read_xml`     an xml-nv tree → feed.  For a caller that already
+//                  parsed the document for another reason.
+//   `stream`       bytes → a head and one entry at a time.  For a
+//                  40 MB archive feed, where holding every entry is
+//                  the thing that does not fit.
+//   `rssjson.read_json`  a JSON value → feed.
+//
+// All four produce the same `rssfeed.RssFeed`, which is the point of
+// the package.
+//
+// NOTHING IS FETCHED.  A feed's `xml:base` establishes what a relative
+// reference resolves against, and `RssOptions.base` is what the CALLER
+// says the document's own address was — normally the URL it just
+// downloaded from. With no base and a relative reference, the
+// reference is kept as written and an `RssNoteUnresolvedUrl` says so.
+// This package never decides that a relative reference is worth a
+// request.
+
+use rsserror
+use rssfeed
+use xmlparse
+use xmltree
+
+// How much deviation a read accepts.
+pub enum RssTolerance
+    // Read what a browser would render; file a note for everything
+    // repaired, guessed at or skipped. The default.
+    RssLenient
+    // Stop at the first note whose kind `rsserror.stops_strict`
+    // answers true for, and answer it as an `RssStrictNote` fault.
+    RssStrict
+
+// What a read is allowed to do and what it is bounded by.
+pub struct RssOptions
+    // Lenient or strict.
+    tolerance: RssTolerance
+    // The address the document itself was fetched from, which relative
+    // references resolve against when the document establishes no
+    // `xml:base` of its own. Empty means there is none.
+    base: Str
+    // Stop after this many entries and file `RssNoteEntriesTruncated`;
+    // `0` means no limit. A reader showing the ten newest posts sets
+    // this and never allocates the other nine thousand.
+    max_entries: Int
+    // Refuse a source longer than this, as `RssTooLarge`; `0` means no
+    // limit.
+    max_bytes: Int
+    // Refuse nesting deeper than this, as `RssTooDeep`. A feed is
+    // three levels deep; the default is 64 and a document that needs
+    // more is not a feed.
+    max_depth: Int
+    // Join a relative reference to the base in effect and file
+    // `RssNoteRelativeUrl`. When false the reference is kept exactly
+    // as written, which is what a tool that round-trips a feed wants.
+    resolve_relative: Bool
+    // Read `<content:encoded>`, Dublin Core's `dc:date` and
+    // `dc:creator`, and Atom's `rel="self"` link inside an RSS
+    // channel. These are extensions rather than the format, and they
+    // are what makes a real-world RSS feed usable; a caller that
+    // wants only what RSS 2.0 specifies turns this off.
+    read_extensions: Bool
+
+// The defaults: lenient, no base, no limits on entries or bytes, depth
+// 64, relative references resolved, extensions read.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     println("${rssread.default_options().max_depth}")
+// ```
+pub fn default_options() -> RssOptions []
+    todo("rss-nv.rssread.default_options")
+
+// `o` with its tolerance set.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     let o = rssread.with_tolerance(rssread.default_options(), RssStrict)
+//     println("${o.max_depth}")
+// ```
+pub fn with_tolerance(o: RssOptions, t: RssTolerance) -> RssOptions []
+    todo("rss-nv.rssread.with_tolerance")
+
+// `o` with the document's own address set — the URL it was fetched
+// from, which relative references resolve against.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     println(rssread.with_base(rssread.default_options(), "https://example.com/f.xml").base)
+// ```
+pub fn with_base(o: RssOptions, base: Str) -> RssOptions []
+    todo("rss-nv.rssread.with_base")
+
+// `o` with a ceiling on how many entries are built.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     println("${rssread.with_max_entries(rssread.default_options(), 10).max_entries}")
+// ```
+pub fn with_max_entries(o: RssOptions, n: Int) -> RssOptions []
+    todo("rss-nv.rssread.with_max_entries")
+
+// What a read produced.
+pub struct RssRead
+    // The feed.
+    feed: rssfeed.RssFeed
+    // Which serialisation it came out of. Kept so a caller that reads
+    // a feed and writes it back can write the same format without
+    // having to sniff it a second time.
+    format: rssfeed.RssFormat
+    // Everything the reader repaired, guessed at or skipped, in the
+    // order it met them. Empty for a feed with nothing odd in it,
+    // which does exist.
+    notes: [rsserror.RssNote]
+    // What the document said its encoding was, or empty. Nothing is
+    // transcoded — the bytes are read as UTF-8 whatever this says, and
+    // an `RssNoteEncodingIgnored` note fires when it says otherwise —
+    // but a caller that wants to re-fetch the bytes and decode them
+    // properly needs to be told what to decode them as.
+    declared_encoding: Str
+
+// Which format `source` is, without building a feed.
+//
+// Cheap: it finds the root element's name and namespace, or the first
+// non-whitespace byte being `{`. `RssFormatUnknown` for RSS 1.0 / RDF
+// and Atom 0.3, both of which `read` refuses by name.
+//
+// ```novo
+// use rssfeed
+// use rssread
+//
+// fn main() [io]
+//     println(rssfeed.format_name(rssread.sniff("<feed xmlns=\"http://www.w3.org/2005/Atom\"/>")))
+// ```
+pub fn sniff(source: Str) -> rssfeed.RssFormat []
+    todo("rss-nv.rssread.sniff")
+
+// A feed out of XML or JSON text, with the default options.
+//
+// The one call most callers make.
+//
+// ```novo
+// use std.list
+// use rssread
+//
+// fn main() [io]
+//     match rssread.read("<rss version=\"2.0\"><channel><title>b</title></channel></rss>")
+//         Ok(r)  => println("${list.len(r.feed.entries)}")
+//         Err(_) => println("no")
+// ```
+pub fn read(source: Str) -> Result<RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssread.read")
+
+// A feed out of XML or JSON text, with the options a caller chose.
+//
+// ```novo
+// use std.list
+// use rssread
+//
+// fn main() [io]
+//     let o = rssread.with_tolerance(rssread.default_options(), RssStrict)
+//     match rssread.read_with("<rss version=\"2.0\"><channel/></rss>", o)
+//         Ok(r)  => println("${list.len(r.notes)}")
+//         Err(_) => println("refused")
+// ```
+pub fn read_with(source: Str, o: RssOptions) -> Result<RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssread.read_with")
+
+// A feed out of a tree xml-nv already built.
+//
+// For a caller that parsed the document for another reason — a
+// validator, a tool that also wants the raw elements — and would
+// rather not parse it twice.
+//
+// ```novo
+// use std.list
+// use rssread
+// use xmltree
+//
+// fn main() [io]
+//     let doc = xmltree.build("<rss version=\"2.0\"><channel/></rss>")
+//     match rssread.read_xml(doc, rssread.default_options())
+//         Ok(r)  => println("${list.len(r.feed.entries)}")
+//         Err(_) => println("no")
+// ```
+pub fn read_xml(doc: xmltree.XmlDocument, o: RssOptions) -> Result<RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssread.read_xml")
+
+// A feed out of XML text, refusing anything that is not RSS 2.0.
+//
+// What a caller polling a known endpoint uses so that a server which
+// starts answering with an error page in Atom is an error rather than
+// an empty feed.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.read_rss20("<rss version=\"2.0\"><channel/></rss>", rssread.default_options())
+//         Ok(_)  => println("rss")
+//         Err(_) => println("no")
+// ```
+pub fn read_rss20(source: Str, o: RssOptions) -> Result<RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssread.read_rss20")
+
+// A feed out of XML text, refusing anything that is not Atom 1.0.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.read_atom10("<feed xmlns=\"http://www.w3.org/2005/Atom\"/>", rssread.default_options())
+//         Ok(_)  => println("atom")
+//         Err(_) => println("no")
+// ```
+pub fn read_atom10(source: Str, o: RssOptions) -> Result<RssRead, rsserror.RssFault> []
+    todo("rss-nv.rssread.read_atom10")
+
+// ── one entry at a time ──────────────────────────────────────────────
+//
+// The door for a feed that does not fit in memory. `stream` reads as
+// far as the first entry, so the feed's own metadata is available
+// immediately; `next_entry` then answers one entry at a time and the
+// caller keeps only what it wants. State is xml-nv's scanner plus the
+// head, and no entry is retained after the caller has seen it.
+
+// A partially-read feed: the head, and where the scanner is.
+pub struct RssStream
+    // The feed's own fields, with `entries` empty. Available before a
+    // single entry has been built, which is what lets a caller decide
+    // from the title and the `updated` stamp whether to read on.
+    head: rssfeed.RssFeed
+    // Which serialisation is being read.
+    format: rssfeed.RssFormat
+    // The options the stream was opened with.
+    options: RssOptions
+    // Where the XML scanner is.
+    scanner: xmlparse.XmlScanner
+    // How many entries have been answered so far.
+    count: Int
+    // Notes filed while reading the head, plus any from the entry most
+    // recently answered.
+    notes: [rsserror.RssNote]
+
+// What `next_entry` answered: the stream moved on, and an entry, or
+// the end.
+pub struct RssEntryStep
+    // The stream, moved past the entry.
+    stream: RssStream
+    // The entry, or `None` when the feed is finished.
+    entry: ?rssfeed.RssEntry
+    // The notes filed while reading this entry, which is the list a
+    // caller shows beside this item.
+    notes: [rsserror.RssNote]
+    // True once the feed is finished.
+    done: Bool
+
+// Read as far as the first entry.
+//
+// JSON Feed is not streamable this way — the value arrives whole — so
+// this refuses `RssFormatJson11` with an `RssNotWritable`-shaped
+// refusal naming the format. That is a limitation of the format and
+// the README says so rather than pretending otherwise.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.stream("<rss version=\"2.0\"><channel/></rss>", rssread.default_options())
+//         Ok(s)  => println("${s.count}")
+//         Err(_) => println("no")
+// ```
+pub fn stream(source: Str, o: RssOptions) -> Result<RssStream, rsserror.RssFault> []
+    todo("rss-nv.rssread.stream")
+
+// The next entry, or the end.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.stream("<rss version=\"2.0\"><channel/></rss>", rssread.default_options())
+//         Ok(s)  =>
+//             match rssread.next_entry(s)
+//                 Ok(step) => println("${step.done}")
+//                 Err(_)   => println("bad")
+//         Err(_) => println("no")
+// ```
+pub fn next_entry(s: RssStream) -> Result<RssEntryStep, rsserror.RssFault> []
+    todo("rss-nv.rssread.next_entry")
+
+// The feed's own fields with no entries in them — what `stream` had
+// after reading the head.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.stream("<rss version=\"2.0\"><channel/></rss>", rssread.default_options())
+//         Ok(s)  => println("[${rssread.head_of(s).title.text}]")
+//         Err(_) => println("no")
+// ```
+pub fn head_of(s: RssStream) -> rssfeed.RssFeed []
+    todo("rss-nv.rssread.head_of")
+
+// Every note the stream has filed so far.
+//
+// ```novo
+// use std.list
+// use rssread
+//
+// fn main() [io]
+//     match rssread.stream("<rss version=\"2.0\"><channel/></rss>", rssread.default_options())
+//         Ok(s)  => println("${list.len(rssread.stream_notes(s))}")
+//         Err(_) => println("no")
+// ```
+pub fn stream_notes(s: RssStream) -> [rsserror.RssNote] []
+    todo("rss-nv.rssread.stream_notes")
+
+// ── what a read found ────────────────────────────────────────────────
+
+// Every note the read filed.
+//
+// ```novo
+// use std.list
+// use rssread
+//
+// fn main() [io]
+//     match rssread.read("<rss version=\"2.0\"><channel/></rss>")
+//         Ok(r)  => println("${list.len(rssread.notes_of(r))}")
+//         Err(_) => println("no")
+// ```
+pub fn notes_of(r: RssRead) -> [rsserror.RssNote] []
+    todo("rss-nv.rssread.notes_of")
+
+// Whether a strict read of the same source would have been refused —
+// `true` when any note's kind `rsserror.stops_strict` answers true
+// for.
+//
+// The one line a publisher's build wants: "this feed is clean" or
+// "this feed is not". It is feedparser's `bozo` flag, computed from
+// the list rather than replacing it.
+//
+// ```novo
+// use rssread
+//
+// fn main() [io]
+//     match rssread.read("<rss version=\"2.0\"><channel/></rss>")
+//         Ok(r)  => println("${rssread.would_fail_strict(r)}")
+//         Err(_) => println("no")
+// ```
+pub fn would_fail_strict(r: RssRead) -> Bool []
+    todo("rss-nv.rssread.would_fail_strict")

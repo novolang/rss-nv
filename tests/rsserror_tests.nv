@@ -1,0 +1,100 @@
+// rsserror_tests.nv — one vocabulary, and the table that splits it.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// `stops_strict` IS THE POLICY, and it is the one function in this
+// package whose answers are worth writing down one at a time: each
+// `true` is a feed a strict reader will refuse, and a publisher has to
+// be able to find out which those are without reading the source.
+
+use std.test
+use std.list
+use rsserror
+
+@test
+fn test_the_strict_table_is_total_and_names_both_sides() [io]
+    test.case("a bad date stops a strict read")
+    test.assert(rsserror.stops_strict(RssNoteBadDate))
+
+    test.case("so does a missing required element")
+    test.assert(rsserror.stops_strict(RssNoteMissingRequired))
+
+    test.case("an unknown element does not — every real feed has one")
+    test.assert(rsserror.stops_strict(RssNoteUnknownElement) == false)
+
+    test.case("nor does a resolved relative reference, which is a repair")
+    test.assert(rsserror.stops_strict(RssNoteRelativeUrl) == false)
+
+    test.case("and the kinds that do are published as a list a publisher can print")
+    let strict = rsserror.strict_kinds()
+    test.assert(list.len(strict) > 0)
+    for k in strict
+        test.assert(rsserror.stops_strict(k))
+
+@test
+fn test_every_note_kind_has_a_short_name_for_a_log_line() [io]
+    test.case("the names are hyphenated, lower case, and stable")
+    test.assert(rsserror.note_name(RssNoteBadDate) == "bad-date")
+    test.assert(rsserror.note_name(RssNoteSyntheticId) == "synthetic-id")
+    test.assert(rsserror.note_name(RssNoteUnknownElement) == "unknown-element")
+
+    test.case("and no kind is nameless")
+    for k in rsserror.strict_kinds()
+        test.assert(rsserror.note_name(k) != "")
+
+@test
+fn test_a_note_says_what_was_odd_and_where() [io]
+    let n = rsserror.note(RssNoteBadDate, 91200, 41, "yesterday")
+
+    test.case("the three coordinates are kept as written")
+    test.assert(n.at == 91200)
+    test.assert(n.entry == 41)
+    test.assert(n.detail == "yesterday")
+
+    test.case("and the line names all three, because item 41 is the actionable part")
+    let text = rsserror.note_text(n)
+    test.assert(text != "")
+
+@test
+fn test_a_fault_names_its_kind_and_its_place() [io]
+    let f = rsserror.fault(RssRdfRefused, 0, 0 - 1)
+
+    test.case("entry -1 is the feed itself rather than one of its items")
+    test.assert(f.entry == 0 - 1)
+
+    test.case("the kind has a short name")
+    test.assert(rsserror.kind_name(RssRdfRefused) == "rdf-refused")
+
+    test.case("and the message is a line a person can act on")
+    test.assert(rsserror.message(f) != "")
+
+@test
+fn test_what_a_lenient_read_could_have_survived() [io]
+    test.case("a document that is not XML is not a tolerance question")
+    test.assert(rsserror.is_recoverable(RssRdfRefused) == false)
+
+    test.case("nor is Atom 0.3, whose three dates cannot be mapped onto two")
+    test.assert(rsserror.is_recoverable(RssAtomDraftRefused) == false)
+
+    test.case("a strict refusal is recoverable — that is what makes a retry sensible")
+    let n = rsserror.note(RssNoteBadDate, 0, 0, "yesterday")
+    test.assert(rsserror.is_recoverable(RssStrictNote(n)))
+
+@test
+fn test_notes_are_filtered_by_entry_and_by_kind() [io]
+    let a = rsserror.note(RssNoteBadDate, 10, 0, "yesterday")
+    let b = rsserror.note(RssNoteSyntheticId, 20, 1, "")
+    let c = rsserror.note(RssNoteBadDate, 30, 1, "soon")
+    let all = [a, b, c]
+
+    test.case("by entry, so a note shows next to the item it is about")
+    test.assert(list.len(rsserror.notes_for_entry(all, 1)) == 2)
+    test.assert(list.len(rsserror.notes_for_entry(all, 0)) == 1)
+
+    test.case("and by kind, so a report can count the dates it could not read")
+    test.assert(list.len(rsserror.notes_of_kind(all, RssNoteBadDate)) == 2)
+
+    test.case("an entry nobody filed a note against answers the empty list")
+    test.assert(list.len(rsserror.notes_for_entry(all, 9)) == 0)

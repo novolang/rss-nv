@@ -1,0 +1,222 @@
+// rssdate.nv — the date strings three formats disagree about, and the
+// tolerant parse feedparser is famous for.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY THIS IS NOT calendar-nv's JOB.  calendar-nv parses ISO 8601 and
+// RFC 3339, correctly and strictly, and it should keep doing exactly
+// that: a date library whose parser accepts `Sun, 19 May 2002 15:21:36
+// GMT`, `2002-05-19T15:21:36-08:00`, `Sunday, May 19, 2002` and
+// `20020519T152136Z` from one entry point is a date library nobody can
+// use to validate anything. What this module does is the opposite of
+// validation — it is "somebody published a feed with a date in it and
+// we would like to show it in order" — and that belongs beside the
+// feed reader, where the answer to an unparseable date is a note and
+// an entry with no stamp rather than a refusal.
+//
+// So: RFC 3339 goes to calendar-nv. RFC 822, which RSS 2.0 specifies
+// and which calendar-nv has no printer or parser for, is here. And
+// `parse_any` is the ordered list of everything else.
+//
+// THE ORDER IS THE SPECIFICATION.  `formats()` answers the shapes
+// `parse_any` tries, in the order it tries them, as strings a person
+// can read. That list is the module's contract: adding a shape is a
+// minor version, and a caller that needs to know whether a string
+// would be read can ask without parsing it. feedparser's equivalent
+// is a Python list of registered handler functions that a reader has
+// to go and look at.
+//
+// EVERY PARSE ANSWERS AN OFFSET, NEVER A NORMALISED INSTANT. A feed
+// that wrote `+01:00` said something, and `rssfeed.RssStamp` keeps
+// both halves so a read-then-write does not change bytes that were
+// right.
+
+use civil
+use rssfeed
+use rsserror
+
+// The shapes `parse_any` tries, in order, as strings a person can
+// read: `RFC 3339`, `RFC 822 with a four-digit year`, `RFC 822 with a
+// two-digit year`, `asctime`, and the four others feeds are found to
+// use. The list IS the contract — a caller can print it in a
+// diagnostic, and adding to it is a minor bump.
+//
+// ```novo
+// use std.list
+// use rssdate
+//
+// fn main() [io]
+//     println("${list.len(rssdate.formats())}")
+// ```
+pub fn formats() -> [Str] []
+    todo("rss-nv.rssdate.formats")
+
+// RFC 822 § 5, as amended by RFC 2822: `Sun, 19 May 2002 15:21:36
+// GMT`, `19 May 2002 15:21:36 -0800`.
+//
+// The format RSS 2.0 specifies for `<pubDate>` and `<lastBuildDate>`,
+// and the one calendar-nv does not have. The day name is optional and
+// is not checked against the date, because a feed whose day name
+// disagrees with its date is a feed with a wrong day name and a right
+// date far more often than the reverse.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     match rssdate.parse_rfc822("Sun, 19 May 2002 15:21:36 GMT")
+//         Ok(s)  => println("${s.offset_min}")
+//         Err(_) => println("no")
+// ```
+pub fn parse_rfc822(s: Str) -> Result<rssfeed.RssStamp, rsserror.RssFault> []
+    todo("rss-nv.rssdate.parse_rfc822")
+
+// RFC 3339, which is what Atom's `atom:updated` and JSON Feed's
+// `date_published` specify. calendar-nv's parser with the offset kept.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     match rssdate.parse_rfc3339("2002-05-19T15:21:36-08:00")
+//         Ok(s)  => println("${s.offset_min}")
+//         Err(_) => println("no")
+// ```
+pub fn parse_rfc3339(s: Str) -> Result<rssfeed.RssStamp, rsserror.RssFault> []
+    todo("rss-nv.rssdate.parse_rfc3339")
+
+// Every shape in `formats()`, tried in order; the first that matches
+// wins.
+//
+// What the readers call, because a feed that says it is RSS routinely
+// carries an RFC 3339 date and a feed that says it is Atom routinely
+// carries an RFC 822 one. The caller learns which happened from the
+// `RssNoteDateWrongFormat` note the reader files, not from here.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     match rssdate.parse_any("2002-05-19T15:21:36Z")
+//         Ok(s)  => println("${s.offset_min}")
+//         Err(_) => println("no")
+// ```
+pub fn parse_any(s: Str) -> Result<rssfeed.RssStamp, rsserror.RssFault> []
+    todo("rss-nv.rssdate.parse_any")
+
+// Which of `formats()` `s` matches, as an index into that list, or
+// `None`.
+//
+// The question `parse_any` answers on the way past, exposed so a
+// reader can file the note without parsing twice.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     match rssdate.shape_of("Sun, 19 May 2002 15:21:36 GMT")
+//         Some(i) => println("${i}")
+//         None    => println("none")
+// ```
+pub fn shape_of(s: Str) -> ?Int []
+    todo("rss-nv.rssdate.shape_of")
+
+// A stamp back out as RFC 822, which is what an RSS 2.0 writer emits:
+// `Sun, 19 May 2002 15:21:36 +0000`.
+//
+// The numeric offset is always written, never an alphabetic zone.
+// RFC 2822 § 4.3 calls the alphabetic forms obsolete and says a parser
+// must treat every one it does not know as `-0000`, which means
+// writing one throws away exactly the information the field carries.
+//
+// ```novo
+// use civil
+// use rssdate
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2002, 5, 19)
+//         Ok(d)  =>
+//             let st = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             println(rssdate.format_rfc822(st))
+//         Err(_) => println("no")
+// ```
+pub fn format_rfc822(st: rssfeed.RssStamp) -> Str []
+    todo("rss-nv.rssdate.format_rfc822")
+
+// A stamp back out as RFC 3339, which is what an Atom or JSON Feed
+// writer emits: `2002-05-19T15:21:36-08:00`.
+//
+// ```novo
+// use civil
+// use rssdate
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2002, 5, 19)
+//         Ok(d)  =>
+//             let st = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             println(rssdate.format_rfc3339(st))
+//         Err(_) => println("no")
+// ```
+pub fn format_rfc3339(st: rssfeed.RssStamp) -> Str []
+    todo("rss-nv.rssdate.format_rfc3339")
+
+// The offset in minutes an RFC 822 alphabetic zone names — `UT` and
+// `GMT` are `0`, `EST` is `-300`, `EDT` is `-240`, and the single
+// military letters are what RFC 2822 § 4.3 says they are, which is
+// `0`, because the 1982 table had the sign the wrong way round and
+// nobody may rely on either reading.
+//
+// `None` for anything else, which is what makes the reader file
+// `RssNoteUnknownTimezone` rather than guess.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     match rssdate.zone_offset("EST")
+//         Some(m) => println("${m}")
+//         None    => println("unknown")
+// ```
+pub fn zone_offset(name: Str) -> ?Int []
+    todo("rss-nv.rssdate.zone_offset")
+
+// The four-digit year a two-digit one means, under RFC 2822 § 4.3:
+// `00`–`49` are `2000`–`2049` and `50`–`99` are `1950`–`1999`.
+//
+// Published as a function rather than buried in the parser because it
+// is a guess, it is the only guess in this module with a date after
+// which it is wrong, and a caller reading an archive from 1997 may
+// want a different one.
+//
+// ```novo
+// use rssdate
+//
+// fn main() [io]
+//     println("${rssdate.widen_year(97)}")
+// ```
+pub fn widen_year(two: Int) -> Int []
+    todo("rss-nv.rssdate.widen_year")
+
+// The instant `st` names, as seconds since the Unix epoch — the wall
+// clock moved by the offset.
+//
+// What a sort compares and what a conditional GET's `If-Modified-Since`
+// wants. Kept separate from the stamp so that normalising is the
+// caller's decision and never happens on the way in.
+//
+// ```novo
+// use civil
+// use rssdate
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(1970, 1, 1)
+//         Ok(d)  =>
+//             let st = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             println("${rssdate.epoch_seconds(st)}")
+//         Err(_) => println("no")
+// ```
+pub fn epoch_seconds(st: rssfeed.RssStamp) -> Int []
+    todo("rss-nv.rssdate.epoch_seconds")

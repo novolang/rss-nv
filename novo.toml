@@ -1,0 +1,72 @@
+[package]
+name        = "rss-nv"
+version     = "0.0.1"
+description = "RSS 2.0, Atom 1.0 and JSON Feed 1.1 read into one feed value and written back out of it, over xml-nv's events: every human-readable string carries whether it is characters, HTML or XHTML, feedparser's tolerance is an enum with a note list rather than one flag, and the writers append to a caller's buffer.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Nothing here fetches a feed: a reader takes the bytes the
+# caller already has and a writer appends to the caller's buffer, so
+# the package has no effects with which to reach the network even if
+# it wanted to.  That is also what makes the tolerance policy testable
+# — every one of feedparser's repairs is a note on a value, asserted
+# against a string in a test, with no server in the room.
+#
+# NO `tests/embedded_probe.nv`, and the absence is a claim not made
+# rather than a claim skipped.  A feed is a list of entries each
+# holding several lists of strings, xml-nv's tree is one allocation
+# per document and it makes no device claim either, and the JSON half
+# rides on `JsonValueH`, which the standard library documents as not
+# available at `@tier(embedded)`.  A microcontroller does not read
+# feeds.
+layer       = "core"
+
+category    = "web"
+
+tags        = ["rss", "atom", "jsonfeed", "feed", "feedparser", "syndication", "xml", "sans-io"]
+repository  = "https://github.com/novolang/rss-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Feeds in three formats, read into one value"
+
+[dependencies]
+# Three `core` dependencies, and one deliberate absence.
+#
+# xml-nv is the scanner and the tree.  Two of the three formats are
+# XML and neither of them is a format a second scanner should be
+# written for: `xmlparse.next_event` is the streaming door this
+# package's `rssread.stream` is built on, and `xmltree` is what the
+# whole-document readers walk.  The writers go out through
+# `xmlwrite`'s escape rules, which are three rules and not one, and
+# which a feed writer that rolled its own would get wrong in attribute
+# values.
+#
+# calendar-nv is the civil date-time an `RssStamp` holds and the
+# RFC 3339 parser Atom and JSON Feed both need.  What calendar-nv does
+# NOT have is RFC 822, which is what RSS 2.0 specifies, so `rssdate`
+# carries that parser and printer — see the module comment for why the
+# tolerant multi-format parse belongs here rather than there.
+#
+# url-nv is RFC 3986 § 5.3, which is what resolving a relative
+# reference against `xml:base` is.  Atom requires it, RSS feeds do it
+# by accident, and `href.join` already exists.
+#
+# NOT html-nv.  This package carries text and says what kind it is; it
+# does not sanitise, escape or render it.  A consumer that displays a
+# feed needs html-nv and should depend on it directly — putting it
+# here would make every feed poller that only reads titles and dates
+# pay for an HTML tokenizer.
+xml-nv      = "^0.0.1"
+calendar-nv = "^0.0.2"
+url-nv      = "^0.1.1"

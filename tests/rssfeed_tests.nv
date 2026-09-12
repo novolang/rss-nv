@@ -1,0 +1,323 @@
+// rssfeed_tests.nv — the feed value, and the questions it answers.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: rss-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// WHAT IS WORTH ASSERTING ABOUT A DATA STRUCTURE is the fallback
+// chains, because they are the part every feed reader reimplements and
+// the part every feed reader gets subtly different. `entry_url` has
+// four steps and `entry_body` has three, and a consumer that sorted a
+// timeline by the wrong one of `published` and `updated` shows posts
+// in an order nobody can explain.
+
+use std.test
+use std.list
+use civil
+use rssfeed
+
+@test
+fn test_an_empty_feed_is_empty_rather_than_absent() [io]
+    test.case("a feed with nothing in it has lists of length zero")
+    let f = rssfeed.empty_feed()
+    test.assert(list.len(f.entries) == 0)
+    test.assert(list.len(f.links) == 0)
+    test.assert(list.len(f.authors) == 0)
+    test.assert(list.len(f.categories) == 0)
+
+    test.case("and the scalars a format marks present-or-absent are None")
+    match f.updated
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match f.subtitle
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("an empty title is an empty text, not a missing one")
+    test.assert(f.title.text == "")
+
+@test
+fn test_a_text_carries_how_to_read_it() [io]
+    test.case("characters are not markup")
+    test.assert(rssfeed.text_is_markup(rssfeed.plain("<p>")) == false)
+
+    test.case("HTML is")
+    test.assert(rssfeed.text_is_markup(rssfeed.html("<p>hi</p>")))
+
+    test.case("and so is XHTML — the distinction is the source, not the risk")
+    test.assert(rssfeed.text_is_markup(rssfeed.xhtml("<p>hi</p>")))
+
+    test.case("the characters survive whichever kind it is")
+    test.assert(rssfeed.plain("<p>").text == "<p>")
+
+@test
+fn test_a_text_carries_its_base_and_its_language() [io]
+    let t = rssfeed.text_in("hi", RssTextPlain, "https://example.com/", "en-GB")
+
+    test.case("both are kept rather than applied")
+    test.assert(t.base == "https://example.com/")
+    test.assert(t.lang == "en-GB")
+
+    test.case("and a text built without them has neither")
+    test.assert(rssfeed.plain("hi").base == "")
+    test.assert(rssfeed.plain("hi").lang == "")
+
+@test
+fn test_links_are_found_by_rel() [io]
+    let site = rssfeed.link("https://example.com/", "alternate", "text/html")
+    let me = rssfeed.link("https://example.com/f.xml", "self", "application/rss+xml")
+    let f = rssfeed.push_link(rssfeed.push_link(rssfeed.empty_feed(), site), me)
+
+    test.case("the feed's own address is the rel=self link")
+    test.assert(rssfeed.self_url(f) == "https://example.com/f.xml")
+
+    test.case("and the site it belongs to is the rel=alternate one")
+    test.assert(rssfeed.site_url(f) == "https://example.com/")
+
+    test.case("a rel nobody wrote answers None rather than the first link")
+    match rssfeed.link_with_rel(f.links, "hub")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("and a feed with no links at all answers the empty string")
+    test.assert(rssfeed.self_url(rssfeed.empty_feed()) == "")
+
+@test
+fn test_an_entry_url_walks_four_steps_in_order() [io]
+    test.case("the entry's own url wins")
+    let a = rssfeed.entry_with_url(rssfeed.empty_entry(), "https://example.com/1")
+    test.assert(rssfeed.entry_url(a) == "https://example.com/1")
+
+    test.case("then its rel=alternate link")
+    let l = rssfeed.link("https://example.com/2", "alternate", "text/html")
+    let b = rssfeed.entry_push_link(rssfeed.empty_entry(), l)
+    test.assert(rssfeed.entry_url(b) == "https://example.com/2")
+
+    test.case("then its id, when the id is a permalink")
+    let c = rssfeed.entry_with_id(rssfeed.empty_entry(), "https://example.com/3", true)
+    test.assert(rssfeed.entry_url(c) == "https://example.com/3")
+
+    test.case("an id that is NOT a permalink is not a url")
+    let d = rssfeed.entry_with_id(rssfeed.empty_entry(), "urn:uuid:0", false)
+    test.assert(rssfeed.entry_url(d) == "")
+
+@test
+fn test_an_entry_body_prefers_content_over_summary() [io]
+    let full = rssfeed.html("<p>the whole post</p>")
+    let short = rssfeed.plain("the whole post, shortened")
+
+    test.case("content wins when there is one")
+    let a = rssfeed.entry_with_content(
+              rssfeed.entry_with_summary(rssfeed.empty_entry(), short), full)
+    test.assert(rssfeed.entry_body(a).text == "<p>the whole post</p>")
+
+    test.case("the summary stands in when there is not")
+    let b = rssfeed.entry_with_summary(rssfeed.empty_entry(), short)
+    test.assert(rssfeed.entry_body(b).text == "the whole post, shortened")
+
+    test.case("and an entry with neither answers an empty plain text")
+    let c = rssfeed.entry_body(rssfeed.empty_entry())
+    test.assert(c.text == "")
+    test.assert(rssfeed.text_is_markup(c) == false)
+
+@test
+fn test_an_entry_is_dated_by_published_then_updated() [io]
+    match civil.date(2026, 9, 11)
+        Err(_) => test.assert(false)
+        Ok(d)  =>
+            let at = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+
+            test.case("published wins")
+            let a = rssfeed.entry_with_published(rssfeed.empty_entry(), at)
+            match rssfeed.entry_when(a)
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+
+            test.case("updated stands in")
+            let b = rssfeed.entry_with_updated(rssfeed.empty_entry(), at)
+            match rssfeed.entry_when(b)
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+
+            test.case("and an undated entry is undated, not epoch zero")
+            match rssfeed.entry_when(rssfeed.empty_entry())
+                Some(_) => test.assert(false)
+                None    => test.assert(true)
+
+@test
+fn test_stamps_compare_as_instants_not_as_wall_clocks() [io]
+    match civil.date(2002, 5, 19)
+        Err(_) => test.assert(false)
+        Ok(d)  =>
+            let noon = civil.datetime(d, civil.midnight())
+
+            test.case("the same instant written two ways is equal")
+            // 12:00+01:00 and 11:00Z are one moment; comparing the
+            // wall clocks would make the first the later of the two.
+            let east = rssfeed.stamp(noon, 60)
+            let utc = rssfeed.stamp(noon, 0)
+            test.assert(rssfeed.compare_stamps(utc, utc) == 0)
+
+            test.case("and a stamp written further east is the earlier instant")
+            test.assert(rssfeed.compare_stamps(east, utc) < 0)
+
+@test
+fn test_entries_sort_newest_first_with_the_undated_last() [io]
+    test.case("an empty feed sorts to nothing")
+    test.assert(list.len(rssfeed.sorted_entries(rssfeed.empty_feed())) == 0)
+
+    test.case("and sorting does not drop the entries it cannot date")
+    let f = rssfeed.push_entry(rssfeed.empty_feed(), rssfeed.empty_entry())
+    test.assert(list.len(rssfeed.sorted_entries(f)) == 1)
+
+@test
+fn test_a_format_names_itself_and_its_media_type() [io]
+    test.case("the names are the ones a log line and a fault message use")
+    test.assert(rssfeed.format_name(RssFormatRss20) == "rss20")
+    test.assert(rssfeed.format_name(RssFormatAtom10) == "atom10")
+    test.assert(rssfeed.format_name(RssFormatJson11) == "json11")
+    test.assert(rssfeed.format_name(RssFormatUnknown) == "unknown")
+
+    test.case("and the media types are the ones a server must send")
+    test.assert(rssfeed.format_mime(RssFormatRss20) == "application/rss+xml")
+    test.assert(rssfeed.format_mime(RssFormatAtom10) == "application/atom+xml")
+    test.assert(rssfeed.format_mime(RssFormatJson11) == "application/feed+json")
+
+@test
+fn test_a_feed_is_built_by_threading_rather_than_by_a_literal() [io]
+    let f = rssfeed.with_generator(
+              rssfeed.with_language(
+                rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog")),
+                "en"),
+              "novo-lang")
+
+    test.case("each with_ answers the feed with one more fact")
+    test.assert(f.title.text == "Blog")
+    test.assert(f.language == "en")
+    test.assert(f.generator == "novo-lang")
+
+    test.case("and push_ appends rather than replacing")
+    let g = rssfeed.push_entry(
+              rssfeed.push_entry(f, rssfeed.empty_entry()), rssfeed.empty_entry())
+    test.assert(list.len(g.entries) == 2)
+
+@test
+fn test_an_entry_is_found_by_id() [io]
+    let e = rssfeed.entry_with_id(rssfeed.empty_entry(), "urn:uuid:1", false)
+    let f = rssfeed.push_entry(rssfeed.empty_feed(), e)
+
+    test.case("the id a feed wrote is the id it is found by")
+    match rssfeed.entry_by_id(f, "urn:uuid:1")
+        Some(found) => test.assert(found.id == "urn:uuid:1")
+        None        => test.assert(false)
+
+    test.case("and an id nobody wrote answers None")
+    match rssfeed.entry_by_id(f, "urn:uuid:2")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_a_link_keeps_the_attributes_the_formats_carry() [io]
+    let l = rssfeed.link_full("https://example.com/f.xml", "self",
+                              "application/atom+xml", "Feed", "en-GB", 4096)
+
+    test.case("every one of the six is kept as the feed wrote it")
+    test.assert(l.href == "https://example.com/f.xml")
+    test.assert(l.rel == "self")
+    test.assert(l.mime == "application/atom+xml")
+    test.assert(l.title == "Feed")
+    test.assert(l.hreflang == "en-GB")
+    test.assert(l.length == 4096)
+
+    test.case("and the three-argument form leaves the other three empty")
+    let s = rssfeed.link("https://example.com/", "alternate", "text/html")
+    test.assert(s.title == "")
+    test.assert(s.hreflang == "")
+    test.assert(s.length == 0)
+
+@test
+fn test_a_person_keeps_the_three_things_the_formats_can_say() [io]
+    let p = rssfeed.person("Ada Lovelace", "ada@example.com", "https://example.com/ada")
+
+    test.case("name, address and home page are three fields, not one string")
+    test.assert(p.name == "Ada Lovelace")
+    test.assert(p.email == "ada@example.com")
+    test.assert(p.uri == "https://example.com/ada")
+
+    test.case("an author goes onto a feed")
+    let f = rssfeed.push_author(rssfeed.empty_feed(), p)
+    test.assert(list.len(f.authors) == 1)
+
+    test.case("and onto an entry, where RSS and Atom both allow one")
+    let e = rssfeed.entry_push_author(rssfeed.empty_entry(), p)
+    test.assert(list.len(e.authors) == 1)
+
+@test
+fn test_an_enclosure_is_its_own_type_rather_than_a_link_with_a_rel() [io]
+    let a = rssfeed.enclosure("https://example.com/ep1.mp3", "audio/mpeg", 8388608)
+
+    test.case("a podcast client asks for the files without filtering links")
+    test.assert(a.url == "https://example.com/ep1.mp3")
+    test.assert(a.mime == "audio/mpeg")
+    test.assert(a.length == 8388608)
+
+    test.case("and they hang off the entry")
+    let e = rssfeed.entry_push_enclosure(rssfeed.empty_entry(), a)
+    test.assert(list.len(e.enclosures) == 1)
+
+@test
+fn test_the_remaining_feed_and_entry_builders_each_set_one_fact() [io]
+    test.case("a feed identity")
+    test.assert(rssfeed.with_id(rssfeed.empty_feed(), "urn:example:feed").id
+                == "urn:example:feed")
+
+    test.case("a subtitle, which is absent until it is set")
+    match rssfeed.with_subtitle(rssfeed.empty_feed(), rssfeed.plain("What I wrote")).subtitle
+        Some(t) => test.assert(t.text == "What I wrote")
+        None    => test.assert(false)
+
+    test.case("an entry title")
+    test.assert(rssfeed.entry_with_title(rssfeed.empty_entry(),
+                                         rssfeed.plain("Post")).title.text == "Post")
+
+    test.case("and an entry category")
+    let c = rssfeed.category("novo-lang", "", "")
+    test.assert(list.len(rssfeed.entry_push_category(rssfeed.empty_entry(), c).categories)
+                == 1)
+
+@test
+fn test_a_feed_reports_when_it_last_changed() [io]
+    match civil.date(2026, 9, 11)
+        Err(_) => test.assert(false)
+        Ok(d)  =>
+            let at = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+            let f = rssfeed.with_updated(rssfeed.empty_feed(), at)
+
+            test.case("the feed's own stamp is set")
+            match f.updated
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+
+            test.case("and newest falls back to it when no entry is dated")
+            match rssfeed.newest(f)
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+
+            test.case("a feed with neither is undated rather than epoch zero")
+            match rssfeed.newest(rssfeed.empty_feed())
+                Some(_) => test.assert(false)
+                None    => test.assert(true)
+
+@test
+fn test_every_link_of_one_rel_comes_back_not_just_the_first() [io]
+    // A feed may carry several alternates — one HTML, one PDF — and a
+    // consumer choosing by media type needs all of them.
+    let html = rssfeed.link("https://example.com/1", "alternate", "text/html")
+    let pdf = rssfeed.link("https://example.com/1.pdf", "alternate", "application/pdf")
+    let f = rssfeed.push_link(rssfeed.push_link(rssfeed.empty_feed(), html), pdf)
+
+    test.case("both alternates come back, in the order the feed wrote them")
+    test.assert(list.len(rssfeed.links_with_rel(f.links, "alternate")) == 2)
+
+    test.case("and a rel nobody wrote answers the empty list")
+    test.assert(list.len(rssfeed.links_with_rel(f.links, "hub")) == 0)

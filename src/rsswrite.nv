@@ -1,0 +1,289 @@
+// rsswrite.nv — a feed back out, in any of the three formats, appended
+// to a buffer the caller owns.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// NOTHING HERE WRITES.  Every function takes the buffer to append to
+// and answers it back, so a site generator producing a feed and three
+// thousand pages keeps one buffer, and a test asserts on bytes with no
+// file in the room. `docs/publishing.md` § Design is explicit that a
+// library returns the text or takes the writer, and this package has
+// no effects with which to do otherwise.
+//
+// A WRITE CAN FAIL, AND `writable` SAYS SO FIRST.  The three formats
+// do not carry the same facts, and a writer that silently dropped the
+// ones its target cannot hold would produce a feed that is missing
+// exactly what the publisher went to the trouble of setting. So a
+// write answers a `Result`, and `writable` answers EVERY problem
+// before a caller commits to a format — which is the call a site
+// generator makes once at startup rather than discovering at the end
+// of a build.
+//
+// The refusals are named rather than derived:
+//
+//   to RSS 2.0     `RssText` of kind `RssTextXhtml` (RSS has no way
+//                  to say a description is live markup); a link with
+//                  a `rel` other than `alternate`, `self` or
+//                  `enclosure`; `contributors`; a feed-level `id`
+//                  other than its self link; an entry `updated`.
+//   to Atom 1.0    nothing. Atom is a superset of the other two for
+//                  everything this package models, which is why it is
+//                  the format `write` picks when a caller does not.
+//   to JSON Feed   a category `scheme`; a link `hreflang`;
+//                  `contributors`; `rights`; any `rel` other than
+//                  `alternate` and `next`; `ttl_minutes`.
+//
+// `RssWriteOptions.lossy` turns each of those from a refusal into a
+// dropped field and a note — for the caller who genuinely wants RSS
+// 2.0 and has read the list.
+
+use rsserror
+use rssfeed
+
+// How a feed is serialised.
+pub struct RssWriteOptions
+    // Spaces of indentation per level of nesting. `0` writes no
+    // whitespace between elements, which is what a wire format wants;
+    // `2` is what a person reading the file wants.
+    indent: Int
+    // Write the XML declaration, or JSON Feed's members on separate
+    // lines. Ignored by a fragment writer.
+    declaration: Bool
+    // Drop what the target format cannot carry, filing a note, instead
+    // of refusing. False by default: a publisher who has not read the
+    // refusal list should be told rather than quietly shipped a feed
+    // with half its links missing.
+    lossy: Bool
+    // The feed's own address, written as `<atom:link rel="self">` in
+    // RSS 2.0 and as `feed_url` in JSON Feed. Empty takes it from the
+    // feed's own `rel="self"` link. RSS 2.0 has no element of its own
+    // for this, and a feed without it cannot be re-found from its own
+    // contents, so the Atom element is written into the RSS output on
+    // purpose and the README says so.
+    self_url: Str
+    // What to write as the generator, or empty to write the feed's own.
+    generator: Str
+    // Write `content` as well as `summary`. A feed that carries full
+    // post bodies is large; an index feed sets this false and writes
+    // summaries only.
+    include_content: Bool
+    // Write at most this many entries, newest first by
+    // `rssfeed.entry_when`; `0` writes all of them.
+    max_entries: Int
+
+// The defaults: two-space indentation, a declaration, not lossy, the
+// feed's own self link and generator, content included, every entry.
+//
+// ```novo
+// use rsswrite
+//
+// fn main() [io]
+//     println("${rsswrite.default_options().indent}")
+// ```
+pub fn default_options() -> RssWriteOptions []
+    todo("rss-nv.rsswrite.default_options")
+
+// Compact: no indentation, a declaration, everything else as the
+// defaults. What a server sends.
+//
+// ```novo
+// use rsswrite
+//
+// fn main() [io]
+//     println("${rsswrite.compact().indent}")
+// ```
+pub fn compact() -> RssWriteOptions []
+    todo("rss-nv.rsswrite.compact")
+
+// `o` with `lossy` set — drop what the target cannot carry and file a
+// note, rather than refusing.
+//
+// ```novo
+// use rsswrite
+//
+// fn main() [io]
+//     println("${rsswrite.with_lossy(rsswrite.default_options(), true).lossy}")
+// ```
+pub fn with_lossy(o: RssWriteOptions, lossy: Bool) -> RssWriteOptions []
+    todo("rss-nv.rsswrite.with_lossy")
+
+// `o` with the feed's own address set.
+//
+// ```novo
+// use rsswrite
+//
+// fn main() [io]
+//     let o = rsswrite.with_self_url(rsswrite.default_options(), "https://example.com/f.xml")
+//     println(o.self_url)
+// ```
+pub fn with_self_url(o: RssWriteOptions, url: Str) -> RssWriteOptions []
+    todo("rss-nv.rsswrite.with_self_url")
+
+// `o` with a ceiling on how many entries are written.
+//
+// ```novo
+// use rsswrite
+//
+// fn main() [io]
+//     println("${rsswrite.with_max_entries(rsswrite.default_options(), 20).max_entries}")
+// ```
+pub fn with_max_entries(o: RssWriteOptions, n: Int) -> RssWriteOptions []
+    todo("rss-nv.rsswrite.with_max_entries")
+
+// What `f` carries that `target` cannot, as one fault per field.
+//
+// An empty list means the write will succeed. Call it once, at
+// startup, rather than discovering at the end of a build that the
+// format chosen in a configuration file drops the thing the site is
+// about.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     println("${list.len(rsswrite.writable(rssfeed.empty_feed(), RssFormatRss20))}")
+// ```
+pub fn writable(f: rssfeed.RssFeed, target: rssfeed.RssFormat) -> [rsserror.RssFault] []
+    todo("rss-nv.rsswrite.writable")
+
+// A feed appended to `out` in `target`'s serialisation.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write([], rssfeed.empty_feed(), RssFormatAtom10, rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write(out: [u8], f: rssfeed.RssFeed, target: rssfeed.RssFormat,
+             o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write")
+
+// A feed appended to `out` as RSS 2.0.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_rss20([], rssfeed.empty_feed(), rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_rss20(out: [u8], f: rssfeed.RssFeed,
+                   o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_rss20")
+
+// A feed appended to `out` as Atom 1.0.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_atom10([], rssfeed.empty_feed(), rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_atom10(out: [u8], f: rssfeed.RssFeed,
+                    o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_atom10")
+
+// A feed appended to `out` as JSON Feed 1.1.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_json11([], rssfeed.empty_feed(), rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_json11(out: [u8], f: rssfeed.RssFeed,
+                    o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_json11")
+
+// One entry appended to `out` as an RSS 2.0 `<item>`.
+//
+// The fragment writer: what a program that is streaming a feed out of
+// a database calls in a loop, between `write_head` and `write_tail`,
+// so no full feed value is ever built.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_entry([], rssfeed.empty_entry(), RssFormatRss20,
+//                                rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_entry(out: [u8], e: rssfeed.RssEntry, target: rssfeed.RssFormat,
+                   o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_entry")
+
+// Everything before the first entry — the declaration, the root
+// element, the feed's own fields.
+//
+// `f.entries` is not read. Pair it with `write_entry` and
+// `write_tail`.
+//
+// ```novo
+// use std.list
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_head([], rssfeed.empty_feed(), RssFormatRss20,
+//                               rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_head(out: [u8], f: rssfeed.RssFeed, target: rssfeed.RssFormat,
+                  o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_head")
+
+// Everything after the last entry — the closing elements.
+//
+// ```novo
+// use std.list
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_tail([], RssFormatRss20, rsswrite.default_options())
+//         Ok(b)  => println("${list.len(b)}")
+//         Err(_) => println("no")
+// ```
+pub fn write_tail(out: [u8], target: rssfeed.RssFormat,
+                  o: RssWriteOptions) -> Result<[u8], rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_tail")
+
+// How many bytes `write` will append, without appending them.
+//
+// What a caller sizing a buffer or setting `Content-Length` on a
+// response asks. Exact, not an estimate: the same walk the writer
+// makes, counting instead of appending.
+//
+// ```novo
+// use rssfeed
+// use rsswrite
+//
+// fn main() [io]
+//     match rsswrite.write_len(rssfeed.empty_feed(), RssFormatAtom10, rsswrite.default_options())
+//         Ok(n)  => println("${n}")
+//         Err(_) => println("no")
+// ```
+pub fn write_len(f: rssfeed.RssFeed, target: rssfeed.RssFormat,
+                 o: RssWriteOptions) -> Result<Int, rsserror.RssFault> []
+    todo("rss-nv.rsswrite.write_len")

@@ -1,0 +1,908 @@
+// rssfeed.nv — one feed value, whatever the format on the wire was.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE POINT OF THE PACKAGE IS THIS FILE.  RSS 2.0, Atom 1.0 and JSON
+// Feed 1.1 describe the same thing three times with three vocabularies,
+// and a program that reads feeds does not want to know which one it
+// got.  So the readers all produce an `RssFeed` and the writers all
+// consume one, and the format survives only as a label on the read
+// (`RssRead.format`) for the caller that wants to write back what it
+// read.
+//
+// EVERY HUMAN-READABLE STRING IS AN `RssText`, NEVER A `Str`.  That is
+// the load-bearing decision and it is worth the extra type at every
+// call site.  RSS 2.0's `<description>` is escaped HTML by universal
+// convention and by no specification.  Atom says which it is, in an
+// attribute, three ways: `type="text"`, `type="html"` and
+// `type="xhtml"`.  JSON Feed splits it into two fields, `content_text`
+// and `content_html`, and says an item may carry either or both.  One
+// question, three spellings — and a reader that flattened them to
+// `Str` hands its caller a string that cannot be rendered safely in
+// either direction: escaping it shows `<p>` to the end user, not
+// escaping it is stored cross-site scripting from whatever the feed
+// said.  So the type travels with the text, and a consumer that
+// renders has to look at it.
+//
+// NOTHING HERE IS OPTIONAL-OF-A-VALUE-STRUCT.  SPEC § 14.5 refuses a
+// `@value` struct as an optional payload, and a feed is full of fields
+// that are genuinely absent — an entry with no publication date, a
+// feed with no icon.  So no struct in this file is `@value`: they are
+// ordinary structs, they allocate, and `?RssStamp` is a legal type.
+// The package makes no device claim, and the reason is in the manifest.
+//
+// A LIST IS EMPTY, NOT ABSENT.  `authors`, `links`, `categories` and
+// `enclosures` are lists, and a feed that named none has a list of
+// length zero.  Only a scalar that a format genuinely marks as present
+// or missing is an `?`.
+
+use civil
+
+// How to read the characters in an `RssText`.
+//
+// The three are Atom's, because Atom is the only one of the three
+// formats that states the question; the readers for the other two map
+// onto it and the notes say where they guessed.
+pub enum RssTextType
+    // Characters, to be shown as they are.  Atom `type="text"`, JSON
+    // Feed's `title` and `content_text`.
+    RssTextPlain
+    // A fragment of HTML, escaped in the source.  Atom `type="html"`,
+    // JSON Feed's `content_html`, and RSS 2.0's `<description>` and
+    // `<content:encoded>` by convention.
+    RssTextHtml
+    // A fragment of XHTML that was live markup in the source rather
+    // than escaped text.  Atom `type="xhtml"` only; the reader has
+    // already serialised the `<div>`'s children into `text`.
+    RssTextXhtml
+
+// A string and how to read it.
+//
+// `base` is the URI that relative references inside `text` resolve
+// against — `xml:base` in an XML feed, `home_page_url` in a JSON one —
+// and it is carried rather than applied because rewriting somebody's
+// markup is not a parser's job.  `lang` is `xml:lang` or JSON Feed's
+// `language`, empty when the feed did not say.
+pub struct RssText
+    // The characters, already entity-decoded for the XML formats.
+    text: Str
+    // How to read them.
+    kind: RssTextType
+    // What a relative reference inside `text` is relative to, or the
+    // empty string when nothing established one.
+    base: Str
+    // BCP 47 language tag, or the empty string.
+    lang: Str
+
+// A link out of a feed or an entry.
+//
+// Atom has as many of these as it likes and distinguishes them by
+// `rel`; RSS 2.0 has one `<link>` and a `<guid isPermaLink="true">`
+// that is also one, and a great many RSS feeds borrow Atom's
+// `<atom:link rel="self">` for their own address because RSS has no
+// way to state it.  So the reader produces a list for every format and
+// `link_with_rel` is how a caller asks for the one it wanted.
+pub struct RssLink
+    // The reference exactly as the feed wrote it — relative if it was
+    // relative.  `rssread.RssOptions.resolve_relative` decides whether
+    // the reader has already joined it to `base`.
+    href: Str
+    // `alternate`, `self`, `enclosure`, `related`, `via`, `hub`,
+    // `next`, `prev`.  An Atom link with no `rel` is `alternate`, and
+    // the reader has already filled that in — RFC 4287 § 4.2.7.2.
+    rel: Str
+    // The `type` attribute: an advertised media type, or empty.
+    mime: Str
+    // The `title` attribute, or empty.
+    title: Str
+    // The `hreflang` attribute, or empty.
+    hreflang: Str
+    // The `length` attribute in bytes, or `0` when absent.  Advisory
+    // in every format that has it, and frequently wrong.
+    length: Int
+
+// A person: Atom's `atom:author`, RSS's `<managingEditor>` and
+// `<author>`, JSON Feed 1.1's `authors` array.
+//
+// RSS's two elements are an address with an optional parenthesised
+// name — `ada@example.com (Ada Lovelace)` — and the reader splits
+// them; the note says it did.
+pub struct RssPerson
+    // The display name, or empty.
+    name: Str
+    // The address, or empty.
+    email: Str
+    // A home page, or empty.  Atom's `atom:uri`, JSON Feed's `url`.
+    uri: Str
+
+// A category, tag or subject.
+pub struct RssCategory
+    // The machine-readable value.  RSS's element text, Atom's `term`,
+    // JSON Feed's array element.
+    term: Str
+    // The vocabulary the term is from: RSS's `domain` attribute,
+    // Atom's `scheme`.  Empty when unstated.
+    scheme: Str
+    // A human-readable form of `term`, or empty.  Atom's `label`.
+    label: Str
+
+// A file hanging off an entry: RSS 2.0's `<enclosure>`, Atom's
+// `rel="enclosure"` link, JSON Feed's `attachments`.
+//
+// Kept as its own type rather than folded into `RssLink` because
+// exactly one of the three formats treats it as a link, and a podcast
+// client asking "what are the audio files" should not have to filter
+// a list of links by `rel` and hope.
+pub struct RssEnclosure
+    // Where the file is.
+    url: Str
+    // The advertised media type; empty when the feed did not say,
+    // which RSS 2.0 requires and many feeds omit.
+    mime: Str
+    // Size in bytes, or `0` when absent.  Advisory.
+    length: Int
+    // JSON Feed's `duration_in_seconds`, or `0`.  The other two
+    // formats carry this only in the iTunes extension, which this
+    // package does not read.
+    duration_s: Int
+    // JSON Feed's `title`, or empty.
+    title: Str
+
+// A moment a feed stamped something with, and how far from UTC the
+// feed wrote it.
+//
+// The civil date-time and the offset are kept apart rather than
+// normalised to UTC because a feed's own offset is information — it is
+// how a reader shows "posted 09:00 local" — and because normalising
+// would make `read` then `write` change bytes that were correct.
+// `rssdate` is where the strings become one of these.
+pub struct RssStamp
+    // The wall-clock date and time the feed wrote.
+    at: CivilDateTime
+    // Minutes east of UTC, so `+01:00` is `60` and `-0500` is `-300`.
+    // A feed that wrote `Z`, `GMT` or `UT` gives `0`.
+    offset_min: Int
+
+// One item or entry.
+pub struct RssEntry
+    // A stable identity for the entry.  Atom's `atom:id`, RSS's
+    // `<guid>`, JSON Feed's `id`, which 1.1 requires.  An RSS feed
+    // with no `<guid>` leaves this empty and the read carries a
+    // `RssNoteSyntheticId` note saying what was used instead.
+    id: Str
+    // Whether `id` is also a URL that can be fetched.  RSS's
+    // `isPermaLink`, which defaults to true and which most feeds that
+    // mean false forget to set.
+    id_is_permalink: Bool
+    // The entry's title.  Required by Atom, optional in the other two;
+    // an entry that had none has an empty `RssText`.
+    title: RssText
+    // Every link the entry carried, `rel` filled in.
+    links: [RssLink]
+    // A short form: Atom's `atom:summary`, RSS's `<description>` when
+    // `<content:encoded>` was also present, JSON Feed's `summary`.
+    summary: ?RssText
+    // The full text: Atom's `atom:content`, RSS's `<content:encoded>`
+    // or its `<description>` when that was all there was, JSON Feed's
+    // `content_html` or `content_text`.
+    content: ?RssText
+    // Who wrote it.
+    authors: [RssPerson]
+    // Who else worked on it.  Atom only.
+    contributors: [RssPerson]
+    // Tags.
+    categories: [RssCategory]
+    // When it first appeared.  Atom's `atom:published`, RSS's
+    // `<pubDate>`, JSON Feed's `date_published`.
+    published: ?RssStamp
+    // When it last changed.  Atom's `atom:updated`, which Atom
+    // requires; JSON Feed's `date_modified`; RSS has none, so an RSS
+    // entry's `updated` is `None` rather than a copy of `published`.
+    updated: ?RssStamp
+    // Files hanging off the entry.
+    enclosures: [RssEnclosure]
+    // Licensing text, or `None`.  Atom's `atom:rights`.
+    rights: ?RssText
+    // The feed the entry says it came from, when it says: Atom's
+    // `atom:source/atom:id`, RSS's `<source url=…>`.  Empty otherwise.
+    source_id: Str
+    // JSON Feed's `url`, or the `rel="alternate"` link's href — the
+    // one address a reader opens when somebody clicks the entry.
+    // Empty when the entry named none.
+    url: Str
+    // JSON Feed's `external_url`, or empty.  A link blog's "the thing
+    // I am linking to", which is a different address from `url`.
+    external_url: Str
+    // JSON Feed's `image`, or empty.
+    image: Str
+    // JSON Feed's `banner_image`, or empty.
+    banner_image: Str
+    // JSON Feed 1.1's `language` for this item, or empty.
+    lang: Str
+
+// A whole feed.
+pub struct RssFeed
+    // A stable identity for the feed.  Atom's `atom:id`, JSON Feed's
+    // `feed_url`.  RSS has none; an RSS read leaves it empty rather
+    // than inventing one.
+    id: Str
+    // The feed's title.
+    title: RssText
+    // A longer description: Atom's `atom:subtitle`, RSS's
+    // `<description>`, JSON Feed's `description`.
+    subtitle: ?RssText
+    // Every link the feed carried.  `rel="self"` is the feed's own
+    // address and `rel="alternate"` is the site it belongs to.
+    links: [RssLink]
+    // Who publishes it.
+    authors: [RssPerson]
+    // Who else.  Atom only.
+    contributors: [RssPerson]
+    // Feed-level tags.
+    categories: [RssCategory]
+    // When the feed last changed.  Atom's `atom:updated`, RSS's
+    // `<lastBuildDate>`, JSON Feed has none.
+    updated: ?RssStamp
+    // When the feed was published, when it says so.  RSS's
+    // `<pubDate>`; Atom has no feed-level equivalent.
+    published: ?RssStamp
+    // What produced the feed, or empty.
+    generator: Str
+    // A small square image: Atom's `atom:icon`, JSON Feed's `favicon`.
+    icon: Str
+    // A larger one: Atom's `atom:logo`, RSS's `<image><url>`, JSON
+    // Feed's `icon`.
+    logo: Str
+    // Licensing text, or `None`.
+    rights: ?RssText
+    // BCP 47 language tag, or empty.
+    language: Str
+    // RSS's `<ttl>` in minutes, or `0`.  Advisory, and no other format
+    // has it.
+    ttl_minutes: Int
+    // JSON Feed's `next_url`, or a `rel="next"` link — the older page
+    // of a paginated feed.  Empty when there is none.
+    next_url: Str
+    // JSON Feed 1.1's `expired`: the publisher has said this feed will
+    // never be updated again, so a reader may stop polling it.  False
+    // for the XML formats, which have no way to say it.
+    expired: Bool
+    // The entries, in the order the feed wrote them, which is not
+    // necessarily newest first and which no format requires to be.
+    entries: [RssEntry]
+
+// Which serialisation a feed was read from or is to be written to.
+pub enum RssFormat
+    // RSS 2.0, and 0.91 / 0.92 / 0.93 / 0.94, which the reader treats
+    // as a subset of it.
+    RssFormatRss20
+    // Atom 1.0, RFC 4287.
+    RssFormatAtom10
+    // JSON Feed 1.1.
+    RssFormatJson11
+    // Nothing this package reads.  `rssread.sniff` answers this for
+    // RSS 1.0 / RDF and Atom 0.3, both of which are refused by name
+    // rather than approximated.
+    RssFormatUnknown
+
+// ── building a feed ──────────────────────────────────────────────────
+//
+// A struct literal cannot be written from another module, so every
+// type above has a constructor here and the two large ones — the feed
+// and the entry — are built by starting empty and threading `with_`
+// calls.  That is also the shape a program generating a feed out of
+// its own records wants: it has a list of posts, not a literal.
+
+// A feed with nothing in it — the starting value a program building a
+// feed from its own records appends to.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.empty_feed().title.text}]")
+// ```
+pub fn empty_feed() -> RssFeed []
+    todo("rss-nv.rssfeed.empty_feed")
+
+// An entry with nothing in it.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.empty_entry().id}]")
+// ```
+pub fn empty_entry() -> RssEntry []
+    todo("rss-nv.rssfeed.empty_entry")
+
+// Characters, to be shown as they are.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.plain("hello").text)
+// ```
+pub fn plain(s: Str) -> RssText []
+    todo("rss-nv.rssfeed.plain")
+
+// A fragment of HTML.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.html("<p>hi</p>").text)
+// ```
+pub fn html(s: Str) -> RssText []
+    todo("rss-nv.rssfeed.html")
+
+// A fragment of XHTML, already serialised out of its wrapper `<div>`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.xhtml("<p>hi</p>").text)
+// ```
+pub fn xhtml(s: Str) -> RssText []
+    todo("rss-nv.rssfeed.xhtml")
+
+// A text with a base URI and a language attached.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let t = rssfeed.text_in("hi", RssTextPlain, "https://example.com/", "en")
+//     println(t.base)
+// ```
+pub fn text_in(s: Str, kind: RssTextType, base: Str, lang: Str) -> RssText []
+    todo("rss-nv.rssfeed.text_in")
+
+// A link.  `rel` empty means `alternate`, which is what RFC 4287
+// § 4.2.7.2 says an Atom link with no `rel` attribute is.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.link("https://example.com/", "alternate", "text/html").href)
+// ```
+pub fn link(href: Str, rel: Str, mime: Str) -> RssLink []
+    todo("rss-nv.rssfeed.link")
+
+// A link with every attribute the formats carry.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let l = rssfeed.link_full("https://example.com/", "self",
+//                               "application/atom+xml", "Feed", "en", 0)
+//     println(l.rel)
+// ```
+pub fn link_full(href: Str, rel: Str, mime: Str, title: Str, hreflang: Str,
+                 length: Int) -> RssLink []
+    todo("rss-nv.rssfeed.link_full")
+
+// A person.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.person("Ada", "ada@example.com", "").name)
+// ```
+pub fn person(name: Str, email: Str, uri: Str) -> RssPerson []
+    todo("rss-nv.rssfeed.person")
+
+// A category.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.category("novo-lang", "", "").term)
+// ```
+pub fn category(term: Str, scheme: Str, label: Str) -> RssCategory []
+    todo("rss-nv.rssfeed.category")
+
+// An enclosure.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.enclosure("https://example.com/a.mp3", "audio/mpeg", 1024).mime)
+// ```
+pub fn enclosure(url: Str, mime: Str, length: Int) -> RssEnclosure []
+    todo("rss-nv.rssfeed.enclosure")
+
+// A stamp: a civil date-time and how far east of UTC the feed wrote it.
+//
+// ```novo
+// use civil
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2026, 9, 11)
+//         Ok(d)  => println("${rssfeed.stamp(civil.datetime(d, civil.midnight()), 60).offset_min}")
+//         Err(_) => println("no")
+// ```
+pub fn stamp(at: CivilDateTime, offset_min: Int) -> RssStamp []
+    todo("rss-nv.rssfeed.stamp")
+
+// `f` with its identity set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.with_id(rssfeed.empty_feed(), "urn:example:feed").id)
+// ```
+pub fn with_id(f: RssFeed, id: Str) -> RssFeed []
+    todo("rss-nv.rssfeed.with_id")
+
+// `f` with its title set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.with_title(rssfeed.empty_feed(), rssfeed.plain("Blog")).title.text)
+// ```
+pub fn with_title(f: RssFeed, title: RssText) -> RssFeed []
+    todo("rss-nv.rssfeed.with_title")
+
+// `f` with its subtitle set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let f = rssfeed.with_subtitle(rssfeed.empty_feed(), rssfeed.plain("What I wrote"))
+//     match f.subtitle
+//         Some(t) => println(t.text)
+//         None    => println("none")
+// ```
+pub fn with_subtitle(f: RssFeed, subtitle: RssText) -> RssFeed []
+    todo("rss-nv.rssfeed.with_subtitle")
+
+// `f` with its last-changed stamp set.
+//
+// ```novo
+// use civil
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2026, 9, 11)
+//         Ok(d)  =>
+//             let s = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             match rssfeed.with_updated(rssfeed.empty_feed(), s).updated
+//                 Some(_) => println("set")
+//                 None    => println("unset")
+//         Err(_) => println("no")
+// ```
+pub fn with_updated(f: RssFeed, updated: RssStamp) -> RssFeed []
+    todo("rss-nv.rssfeed.with_updated")
+
+// `f` with its language set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.with_language(rssfeed.empty_feed(), "en-GB").language)
+// ```
+pub fn with_language(f: RssFeed, lang: Str) -> RssFeed []
+    todo("rss-nv.rssfeed.with_language")
+
+// `f` with what produced it named.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.with_generator(rssfeed.empty_feed(), "novo-lang").generator)
+// ```
+pub fn with_generator(f: RssFeed, generator: Str) -> RssFeed []
+    todo("rss-nv.rssfeed.with_generator")
+
+// `f` with one more link.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let l = rssfeed.link("https://example.com/feed.xml", "self", "")
+//     println("${list.len(rssfeed.push_link(rssfeed.empty_feed(), l).links)}")
+// ```
+pub fn push_link(f: RssFeed, l: RssLink) -> RssFeed []
+    todo("rss-nv.rssfeed.push_link")
+
+// `f` with one more author.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let p = rssfeed.person("Ada", "", "")
+//     println("${list.len(rssfeed.push_author(rssfeed.empty_feed(), p).authors)}")
+// ```
+pub fn push_author(f: RssFeed, p: RssPerson) -> RssFeed []
+    todo("rss-nv.rssfeed.push_author")
+
+// `f` with one more category.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let c = rssfeed.category("novo-lang", "", "")
+//     println("${list.len(rssfeed.push_category(rssfeed.empty_feed(), c).categories)}")
+// ```
+pub fn push_category(f: RssFeed, c: RssCategory) -> RssFeed []
+    todo("rss-nv.rssfeed.push_category")
+
+// `f` with one more entry, appended after the ones already there.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let e = rssfeed.empty_entry()
+//     println("${list.len(rssfeed.push_entry(rssfeed.empty_feed(), e).entries)}")
+// ```
+pub fn push_entry(f: RssFeed, e: RssEntry) -> RssFeed []
+    todo("rss-nv.rssfeed.push_entry")
+
+// `e` with its identity set, and whether that identity is also a URL.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.entry_with_id(rssfeed.empty_entry(), "urn:x:1", false).id)
+// ```
+pub fn entry_with_id(e: RssEntry, id: Str, is_permalink: Bool) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_id")
+
+// `e` with its title set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let e = rssfeed.entry_with_title(rssfeed.empty_entry(), rssfeed.plain("Post"))
+//     println(e.title.text)
+// ```
+pub fn entry_with_title(e: RssEntry, title: RssText) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_title")
+
+// `e` with its full text set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let e = rssfeed.entry_with_content(rssfeed.empty_entry(), rssfeed.html("<p>hi</p>"))
+//     match e.content
+//         Some(t) => println(t.text)
+//         None    => println("none")
+// ```
+pub fn entry_with_content(e: RssEntry, content: RssText) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_content")
+
+// `e` with its short form set.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     let e = rssfeed.entry_with_summary(rssfeed.empty_entry(), rssfeed.plain("short"))
+//     match e.summary
+//         Some(t) => println(t.text)
+//         None    => println("none")
+// ```
+pub fn entry_with_summary(e: RssEntry, summary: RssText) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_summary")
+
+// `e` with the address a click should open.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.entry_with_url(rssfeed.empty_entry(), "https://example.com/1").url)
+// ```
+pub fn entry_with_url(e: RssEntry, url: Str) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_url")
+
+// `e` with its first-published stamp set.
+//
+// ```novo
+// use civil
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2026, 9, 11)
+//         Ok(d)  =>
+//             let s = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             match rssfeed.entry_with_published(rssfeed.empty_entry(), s).published
+//                 Some(_) => println("set")
+//                 None    => println("unset")
+//         Err(_) => println("no")
+// ```
+pub fn entry_with_published(e: RssEntry, at: RssStamp) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_published")
+
+// `e` with its last-changed stamp set.
+//
+// ```novo
+// use civil
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2026, 9, 11)
+//         Ok(d)  =>
+//             let s = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             match rssfeed.entry_with_updated(rssfeed.empty_entry(), s).updated
+//                 Some(_) => println("set")
+//                 None    => println("unset")
+//         Err(_) => println("no")
+// ```
+pub fn entry_with_updated(e: RssEntry, at: RssStamp) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_with_updated")
+
+// `e` with one more link.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let l = rssfeed.link("https://example.com/1", "alternate", "text/html")
+//     println("${list.len(rssfeed.entry_push_link(rssfeed.empty_entry(), l).links)}")
+// ```
+pub fn entry_push_link(e: RssEntry, l: RssLink) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_push_link")
+
+// `e` with one more author.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let p = rssfeed.person("Ada", "", "")
+//     println("${list.len(rssfeed.entry_push_author(rssfeed.empty_entry(), p).authors)}")
+// ```
+pub fn entry_push_author(e: RssEntry, p: RssPerson) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_push_author")
+
+// `e` with one more category.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let c = rssfeed.category("novo-lang", "", "")
+//     println("${list.len(rssfeed.entry_push_category(rssfeed.empty_entry(), c).categories)}")
+// ```
+pub fn entry_push_category(e: RssEntry, c: RssCategory) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_push_category")
+
+// `e` with one more enclosure.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     let a = rssfeed.enclosure("https://example.com/a.mp3", "audio/mpeg", 1024)
+//     println("${list.len(rssfeed.entry_push_enclosure(rssfeed.empty_entry(), a).enclosures)}")
+// ```
+pub fn entry_push_enclosure(e: RssEntry, a: RssEnclosure) -> RssEntry []
+    todo("rss-nv.rssfeed.entry_push_enclosure")
+
+// ── asking a feed a question ─────────────────────────────────────────
+
+// True when `t` holds markup rather than characters — the one question
+// a renderer has to ask before it decides whether to escape.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("${rssfeed.text_is_markup(rssfeed.html("<p>hi</p>"))}")
+// ```
+pub fn text_is_markup(t: RssText) -> Bool []
+    todo("rss-nv.rssfeed.text_is_markup")
+
+// The first link whose `rel` is `rel`, or `None`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     match rssfeed.link_with_rel(rssfeed.empty_feed().links, "self")
+//         Some(l) => println(l.href)
+//         None    => println("none")
+// ```
+pub fn link_with_rel(links: [RssLink], rel: Str) -> ?RssLink []
+    todo("rss-nv.rssfeed.link_with_rel")
+
+// Every link whose `rel` is `rel`.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     println("${list.len(rssfeed.links_with_rel(rssfeed.empty_feed().links, "alternate"))}")
+// ```
+pub fn links_with_rel(links: [RssLink], rel: Str) -> [RssLink] []
+    todo("rss-nv.rssfeed.links_with_rel")
+
+// The feed's own address: the `rel="self"` link, or the empty string.
+//
+// The address a reader stores so it can poll again, and the one thing
+// RSS 2.0 cannot state without borrowing Atom's element — which is why
+// so many RSS feeds carry an `<atom:link rel="self">`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.self_url(rssfeed.empty_feed())}]")
+// ```
+pub fn self_url(f: RssFeed) -> Str []
+    todo("rss-nv.rssfeed.self_url")
+
+// The site the feed belongs to: the `rel="alternate"` link, or the
+// empty string.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.site_url(rssfeed.empty_feed())}]")
+// ```
+pub fn site_url(f: RssFeed) -> Str []
+    todo("rss-nv.rssfeed.site_url")
+
+// The address a click on `e` should open: `e.url` when the entry named
+// one, otherwise its `rel="alternate"` link, otherwise its `id` when
+// that is a permalink, otherwise the empty string.
+//
+// Three formats spell this three ways and every feed reader in the
+// world implements this fallback; it is here so it is written once.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.entry_url(rssfeed.empty_entry())}]")
+// ```
+pub fn entry_url(e: RssEntry) -> Str []
+    todo("rss-nv.rssfeed.entry_url")
+
+// The best full text for `e`: its `content` when it has one, otherwise
+// its `summary`, otherwise an empty plain text.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println("[${rssfeed.entry_body(rssfeed.empty_entry()).text}]")
+// ```
+pub fn entry_body(e: RssEntry) -> RssText []
+    todo("rss-nv.rssfeed.entry_body")
+
+// When `e` happened: its `published` when it has one, otherwise its
+// `updated`, otherwise `None`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     match rssfeed.entry_when(rssfeed.empty_entry())
+//         Some(_) => println("dated")
+//         None    => println("undated")
+// ```
+pub fn entry_when(e: RssEntry) -> ?RssStamp []
+    todo("rss-nv.rssfeed.entry_when")
+
+// The latest `entry_when` over `f.entries`, or `f.updated`, or `None`.
+//
+// What a poller compares against what it stored last time.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     match rssfeed.newest(rssfeed.empty_feed())
+//         Some(_) => println("dated")
+//         None    => println("undated")
+// ```
+pub fn newest(f: RssFeed) -> ?RssStamp []
+    todo("rss-nv.rssfeed.newest")
+
+// `a` before, equal to or after `b` as `-1`, `0`, `1`, comparing the
+// two instants rather than the two wall clocks — so a stamp written
+// `12:00+01:00` sorts before one written `12:00Z`.
+//
+// ```novo
+// use civil
+// use rssfeed
+//
+// fn main() [io]
+//     match civil.date(2026, 9, 11)
+//         Ok(d)  =>
+//             let s = rssfeed.stamp(civil.datetime(d, civil.midnight()), 0)
+//             println("${rssfeed.compare_stamps(s, s)}")
+//         Err(_) => println("no")
+// ```
+pub fn compare_stamps(a: RssStamp, b: RssStamp) -> Int []
+    todo("rss-nv.rssfeed.compare_stamps")
+
+// `f.entries` newest first by `entry_when`, undated entries last in
+// the order they arrived.
+//
+// No format requires a feed to be sorted and plenty are not, so a
+// reader that shows a timeline has to do this and it belongs here.
+//
+// ```novo
+// use std.list
+// use rssfeed
+//
+// fn main() [io]
+//     println("${list.len(rssfeed.sorted_entries(rssfeed.empty_feed()))}")
+// ```
+pub fn sorted_entries(f: RssFeed) -> [RssEntry] []
+    todo("rss-nv.rssfeed.sorted_entries")
+
+// The entry whose `id` is `id`, or `None`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     match rssfeed.entry_by_id(rssfeed.empty_feed(), "x")
+//         Some(_) => println("found")
+//         None    => println("none")
+// ```
+pub fn entry_by_id(f: RssFeed, id: Str) -> ?RssEntry []
+    todo("rss-nv.rssfeed.entry_by_id")
+
+// The name of a format, as it appears in a fault message and in
+// `rssread.RssRead.format`: `rss20`, `atom10`, `json11`, `unknown`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.format_name(RssFormatAtom10))
+// ```
+pub fn format_name(f: RssFormat) -> Str []
+    todo("rss-nv.rssfeed.format_name")
+
+// The media type a server should send a feed of this format as:
+// `application/rss+xml`, `application/atom+xml`,
+// `application/feed+json`.
+//
+// ```novo
+// use rssfeed
+//
+// fn main() [io]
+//     println(rssfeed.format_mime(RssFormatAtom10))
+// ```
+pub fn format_mime(f: RssFormat) -> Str []
+    todo("rss-nv.rssfeed.format_mime")
