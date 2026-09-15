@@ -1,265 +1,325 @@
 # rss-nv
 
-**Status: NOT IMPLEMENTED — interface only.**
+A **feed** is a file a site publishes listing its recent items, so that
+a program can follow the site without a person visiting it. Three
+formats are in use:
+[RSS 2.0](https://www.rssboard.org/rss-specification),
+[Atom 1.0](https://www.rfc-editor.org/rfc/rfc4287) and
+[JSON Feed 1.1](https://www.jsonfeed.org/version/1.1/). This package
+reads all three into one value and writes that value back out as any of
+them, so a program that reads feeds never learns which format it got,
+and a program that publishes one chooses the format at the last moment.
+It is a port of the Rust crate
+[rss](https://github.com/rust-syndication/rss) and of Python's
+[feedparser](https://github.com/kurtmckee/feedparser).
 
-Every public function below is published with its signature and its
-effect row, and every body is `todo()`.  Installing this package works;
-calling it panics with `not implemented`.
+**Status: NOT IMPLEMENTED — interface only.** Every function is
+declared with its full signature, but every body is a `todo()` that
+panics when called. The package is published so its design can be
+reviewed and depended on before it is implemented. Version 0.1.0 will
+be the first working release.
 
-## What this is
+## What a feed is
 
-Feeds, in the three formats anybody publishes: RSS 2.0, Atom 1.0 and
-JSON Feed 1.1.  All three read into **one** value and all three are
-written back out of it, so a program that reads feeds never learns
-which one it got, and a program that publishes one picks its format at
-the last moment.
+A feed has a title, an address of its own, a last-updated stamp and a
+list of **entries**. An entry has an identifier, a title, a link, one
+or two dates, and a body. RSS calls an entry an item and Atom calls it
+an entry; this package calls it an entry.
 
-It is what you reach for when you are writing a feed reader, a
-planet-style aggregator, a podcast client, or a site generator that
-has to emit a feed people can subscribe to.  Nothing here fetches
-anything: you hand it bytes and it hands you a value.
+Feeds in the wild are frequently invalid, and a reader that refused
+them would read almost nothing. Reading one is therefore tolerant: this
+package repairs what it can and records each repair as a **note**, a
+named kind with a position and the text it was about.
 
-Six modules, and a reader should know which one they are on.
+The three formats disagree about what a human-readable string is. RSS
+2.0's `<description>` is escaped HTML by universal convention and by no
+specification, so the document does not say and the two readings differ
+for every entry containing a `<`. Atom says, in an attribute, and says
+it three ways: `type="text"` is characters, `type="html"` is escaped
+markup, and `type="xhtml"` is live markup inside a wrapping `<div>`
+that is not itself content (RFC 4287 section 3.1). JSON Feed splits the
+question into `content_text` and `content_html`, and an item may carry
+either or both.
 
-| surface | module | reach for it when |
-| --- | --- | --- |
-| the **feed** | `rssfeed` | you are building a feed, or asking one a question |
-| the **reader** | `rssread` | you have bytes and want a feed |
-| the **JSON half** | `rssjson` | the bytes were `application/feed+json` |
-| the **writer** | `rsswrite` | you are publishing a feed |
-| the **dates** | `rssdate` | a feed's date string did not parse |
-| the **notes** | `rsserror` | you are reporting what was odd about somebody's feed |
+So every human-readable string in this package is an `RssText`: the
+text, and what kind of text it is. A reader that flattened the three
+spellings into a plain string would hand its caller something that
+cannot be displayed correctly either way: escape it and a person sees
+`<p>` in their reading list, do not escape it and the feed has injected
+markup into the page.
 
-## Adding it, and checking it
+A **stamp** is a date and a time with an offset. RSS 2.0 specifies RFC
+822 dates and Atom specifies RFC 3339 ones, and feeds carry each in the
+other's place often enough that this package tries both.
 
-```bash
-novo pkg add rss-nv            # into your novo.toml
-novo pkg build                 # type- and effect-check the package
-novo test --isolate tests/rssread_tests.nv
+Every function in this package performs no input and no output. Nothing
+here fetches a feed: the caller hands it bytes.
+
+## Install
+
+```
+novo pkg add rss-nv
 ```
 
-`novo test` is red today and that is the point of the release: every
-assertion fails with `not implemented: rss-nv.<module>.<fn>`.  They
-turn green one at a time as bodies land.
-
-## The one example that will work
+## Example
 
 ```novo
+use rsserror
 use rssfeed
 use rssread
 
 fn main() [io]
-    match rssread.read(bytes_from_somewhere())
-        Err(f) => println("not a feed")
+    // Bytes as they arrived, in any of the three formats.
+    let source = "<rss version=\"2.0\"><channel><title>Example</title></channel></rss>"
+
+    match rssread.read(source)
+        Err(f) => println("not a feed: ${rsserror.message(f)}")
         Ok(r)  =>
+            // The same fields whichever format the bytes were.
             println(r.feed.title.text)
+
+            // Entries newest first, with the link a reader opens.
             for e in rssfeed.sorted_entries(r.feed)
                 println("  ${e.title.text} — ${rssfeed.entry_url(e)}")
+
+            // Everything the read repaired, one note each.
             for n in r.notes
-                println("  note: ${n.detail}")
+                println("  note: ${rsserror.note_text(n)}")
 ```
 
-Nothing in that changes if the bytes were RSS, Atom or JSON Feed.
+Build and test with `novo pkg build` and `novo test`. Today `novo test`
+fails on purpose: every test reaches a
+`not implemented: rss-nv.<module>.<fn>` panic. The tests are the
+specification the implementation will have to satisfy.
 
-## The load-bearing interface
+## What the package contains
 
-`rssfeed.RssText` — a string, and what kind of string it is.
+| Module | Contents |
+| --- | --- |
+| `rsserror` | The notes a read files, the faults that stop one, and which notes strict reading turns into faults. |
+| `rssfeed` | The feed and the entry as values, the builders over them, and the questions a consumer asks. |
+| `rssdate` | RFC 822 and RFC 3339 dates, the tolerant parse over both, and the printers. |
+| `rssread` | Reading: format detection, the whole-document readers, and the streaming reader. |
+| `rssjson` | The JSON Feed half, over the standard library's JSON value. |
+| `rsswrite` | Writing: a feed into a caller's buffer as any of the three formats, and what each format cannot carry. |
 
-```novo norun:pseudo
-pub struct RssText
-    text: Str
-    kind: RssTextType   // RssTextPlain | RssTextHtml | RssTextXhtml
-    base: Str
-    lang: Str
-```
+## How to choose an entry point
 
-Every human-readable string in this package is one of these and none
-of them is a `Str`.  That looks like ceremony until you try to render
-a feed.
+**`rssread.read` takes bytes and answers a feed.** It detects the
+format. `read_with` takes options. `read_rss20` and `read_atom10` take
+a format the caller already knows, and `read_xml` takes a document
+xml-nv has already parsed.
 
-RSS 2.0's `<description>` is escaped HTML by universal convention and
-by no specification — the 2.0 document does not say, and the two
-readings differ for every entry that contains a `<`.  Atom does say,
-in an attribute, and says it three ways: `type="text"` is characters,
-`type="html"` is escaped markup, `type="xhtml"` is *live* markup
-inside a wrapper `<div>` that is not itself content.  JSON Feed splits
-the question into two members, `content_text` and `content_html`, and
-permits an item to carry either or both.
+**`rssread.stream` reads as far as the first entry**, so a feed's title
+and stamp are available immediately, and `next_entry` answers one entry
+at a time with nothing accumulating. Use it for a large archive feed.
+JSON Feed is not streamable this way and `stream` says so.
 
-One question, three spellings.  A reader that flattened them to `Str`
-hands its caller a string that cannot be displayed safely in either
-direction: escape it and the end user sees `<p>` in their reading
-list; do not escape it and you have stored cross-site scripting from
-whatever the feed said.  So the answer travels with the text, and
-`rssfeed.text_is_markup` is the one question a renderer has to ask.
+**`rsswrite.write` writes a whole feed.** `write_head`, `write_entry`
+and `write_tail` are the streaming form, for a program producing a feed
+out of a database without building the whole value.
 
-The second decision the rest follows from is that **the tolerance is
-an enum and the repairs are a list**.  feedparser has a single `bozo`
-flag and a single `bozo_exception`; a feed with nine small deviations
-and a feed with one fatal one both come back with `bozo = 1`, so a
-consumer cannot tell "I repaired nine things" from "I gave up".  Here
-a read answers a `Result` *and* a list of `rsserror.RssNote`, and
-`rsserror.stops_strict` is one total function from a note kind to
-whether `RssStrict` turns it into a fault.  The policy is a table, not
-a branch in each of three readers, and `rssread.would_fail_strict`
-recomputes feedparser's flag from the list for anyone who wants it.
+**`rsswrite.writable` asks what a format cannot carry**, before a
+write, so a site generator learns at start-up rather than at the end of
+a build.
 
-## Which of feedparser's normalisations are in
+**`rssfeed.text_is_markup` is the one question a renderer must ask** of
+every string it displays.
 
-**In**, and each one files a note saying it happened:
+## The rules a user needs
 
-- The date parse.  `rssdate.parse_any` tries the shapes in
-  `rssdate.formats()`, in order, so an RSS feed carrying an RFC 3339
-  date and an Atom feed carrying an RFC 822 one both read
-  (`RssNoteDateWrongFormat`).  Two-digit years widen under RFC 2822's
-  rule (`RssNoteTwoDigitYear`); an unknown alphabetic zone reads as
-  `+0000` (`RssNoteUnknownTimezone`).
-- Relative references resolved against `xml:base`, or against the
-  address the caller says the document came from
-  (`RssNoteRelativeUrl`), with `RssNoteUnresolvedUrl` when there was
-  no base to resolve against.
-- `rel` filled in on an Atom link that has none — RFC 4287 § 4.2.7.2
-  says it is `alternate`.
-- An RSS item with no `<guid>` taking its id from its `<link>`
-  (`RssNoteSyntheticId`).
-- `address (Name)` split into an address and a name
-  (`RssNoteAuthorSplit`).
-- An RSS `<description>` read as HTML (`RssNoteContentTypeGuessed`).
-- The named extensions that make a real RSS feed usable:
-  `<content:encoded>`, `dc:date`, `dc:creator`, and `<atom:link
-  rel="self">` inside an RSS channel.  `RssOptions.read_extensions`
-  turns them off.
-- Elements in the wrong namespace read anyway
-  (`RssNoteMismatchedNamespace`).
+1. **Every human-readable string carries its kind.** `RssTextPlain` is
+   characters, `RssTextHtml` is escaped markup, `RssTextXhtml` is live
+   markup. Ask `rssfeed.text_is_markup` before displaying one.
+2. **This package does not sanitise.** It carries the text and says
+   what kind it is. Removing scripts and event handlers from markup is
+   [html-nv](https://novo-lang.org/packages/html-nv)'s work and should
+   be a consumer's explicit decision with a visible allow-list.
+3. **A read answers a result and a list of notes.** The result says
+   whether the document could be read at all. The notes say what was
+   repaired. A single flag cannot distinguish nine small repairs from
+   one fatal failure.
+4. **`rsserror.stops_strict` is the whole policy.** It is one total
+   function from a note kind to whether `RssStrict` turns that note
+   into a fault. `rssread.would_fail_strict` recomputes feedparser's
+   single flag from the note list for a caller that wants it.
+5. **Dates are parsed by shape, not by which element they were in.**
+   `rssdate.parse_any` tries `rssdate.formats()` in order, so an RSS
+   feed carrying an RFC 3339 date reads, and files
+   `RssNoteDateWrongFormat`.
+6. **A two-digit year is widened under RFC 2822's rule**, and files
+   `RssNoteTwoDigitYear`. An alphabetic zone outside `UT`, `GMT` and
+   the four North American pairs reads as `+0000`, which is what RFC
+   822 section 5.2 says, and files `RssNoteUnknownTimezone`. Both are
+   somebody's guess and both are recorded.
+7. **A relative reference is resolved against `xml:base`, or against
+   `RssOptions.base`.** Set `base` to the address the document was
+   fetched from. Without one, a relative reference is kept as written
+   and files `RssNoteUnresolvedUrl`. Turn `resolve_relative` off when
+   round-tripping a feed unchanged.
+8. **An RSS item with no `<guid>` takes its identifier from its
+   `<link>`**, and files `RssNoteSyntheticId`. Two entries with one
+   identifier are both kept, in arrival order, and file
+   `RssNoteDuplicateId`: deciding which wins is the consumer's.
+9. **An Atom link with no `rel` is `alternate`** (RFC 4287 section
+   4.2.7.2).
+10. **Four extensions are read, and `read_extensions` turns them off.**
+    `<content:encoded>`, Dublin Core's `dc:date` and `dc:creator`, and
+    an `<atom:link rel="self">` inside an RSS channel. They are what
+    makes a real RSS feed usable.
+11. **The bytes are read as UTF-8 and nothing is transcoded.** A
+    document declaring another encoding files
+    `RssNoteEncodingIgnored`, and `RssRead.declared_encoding` carries
+    what it declared, so a caller can decode again itself.
+12. **XML's five predefined entities are expanded and HTML's are not.**
+    An undeclared entity is left as written and files
+    `RssNoteUndeclaredEntity`. The 2231 named references are html-nv's
+    table.
+13. **Three inputs are refused rather than approximated.**
 
-**Out**, on purpose:
+    | Refused | Why |
+    | --- | --- |
+    | RSS 1.0, which is RDF | Its items are siblings of the channel rather than children, so reading it as RSS 2.0 gives a feed with a title, no entries and nothing that looks like a failure |
+    | Atom 0.3 | It has `issued`, `modified` and `created` where 1.0 has two dates, and every mapping between them is wrong for some feeds |
+    | A JSON Feed with no `version` | Without it the value is some other JSON object |
 
-- **Sanitising.**  feedparser strips scripts and event handlers out of
-  content it returns.  This package carries the text and says what
-  kind it is; sanitising markup is html-nv's job and it should be the
-  consumer's explicit decision, made with a visible allow-list, rather
-  than a thing a feed parser did on the way past.
-- **Character-set detection and transcoding.**  feedparser sniffs the
-  encoding from the HTTP header, the XML declaration and the bytes,
-  and transcodes.  Here the bytes are read as UTF-8, the declared
-  encoding is reported in `RssRead.declared_encoding`, and a document
-  that declared something else files `RssNoteEncodingIgnored`.  A
-  caller that needs to re-decode has what it needs to do so; a `core`
-  package that carried a charset table would be carrying a much larger
-  table than a feed reader needs.
-- **HTML entity expansion.**  XML's five predefined entities are
-  expanded; HTML's 2 231 named references are not
-  (`RssNoteUndeclaredEntity`).  That table is html-nv's.
-- **Microformat and namespace scraping.**  feedparser reads about
-  thirty extension namespaces — iTunes, Media RSS, GeoRSS, CreativeCommons,
-  and more.  Four are read here (above); the rest are not, because a
-  podcast client wanting the iTunes vocabulary is better served by a
-  package that models it properly than by fields bolted onto a generic
-  entry.
-- **Anything that fetches.**  No conditional GET, no redirect
-  following, no ETag store.  Those are a `host` package's, over
-  `std.http`, and this one has no effects with which to do them.
-- **RSS 1.0 / RDF and Atom 0.3**, which are refused by name.  See
-  below.
-
-## What is refused rather than approximated
-
-- **RSS 1.0 / RDF** (`RssRdfRefused`).  It is an RDF vocabulary, not a
-  dialect of RSS 2.0: its `<item>`s are siblings of the `<channel>`
-  rather than children, so reading it as RSS 2.0 produces a feed with
-  a title and no entries and nothing that looks like a failure.
-- **Atom 0.3** (`RssAtomDraftRefused`).  0.3 has `<issued>`,
-  `<modified>` and `<created>`, which are three dates where 1.0 has
-  two, and every mapping between them is wrong for some feeds.
-- **A JSON Feed with no `version`** (`RssNotJsonFeed`), because
-  without it the value is some other JSON object entirely.
+14. **Set `max_entries` when only the newest matter.** A reader showing
+    ten posts never allocates the other nine thousand, and the read
+    files `RssNoteEntriesTruncated`.
+15. **An RSS 2.0 write emits `<atom:link rel="self">`.** RSS 2.0 has no
+    element for a feed's own address, so a feed that does not state it
+    cannot be re-found from its own contents, and this is what every
+    RSS feed in the wild already uses.
 
 ## What each format cannot carry
 
-`rsswrite.writable` answers this for a given feed before a write, one
-fault per field, so a site generator learns at startup rather than at
-the end of a build.
+`rsswrite.writable` answers this for a given feed and target, one fault
+per field. `RssWriteOptions.lossy` turns each refusal into a dropped
+field and a note, for a caller that wants RSS 2.0 and has read the
+list.
 
-To **RSS 2.0**: XHTML content, `contributors`, an entry `updated`, a
-feed `id` other than its self link, any link `rel` other than
-`alternate`, `self` or `enclosure`.
+| Target | Cannot carry |
+| --- | --- |
+| RSS 2.0 | XHTML content, contributors, an entry's `updated`, a feed identifier other than its self link, and any link relation other than `alternate`, `self` or `enclosure` |
+| Atom 1.0 | nothing this package models. It is what `write` picks when the caller expresses no preference |
+| JSON Feed 1.1 | a category's scheme, a link's language, contributors, rights, a time-to-live, and any link relation other than `alternate` or `next` |
 
-To **Atom 1.0**: nothing this package models.  It is the format
-`write` picks when a caller expresses no preference.
+## Limits
 
-To **JSON Feed 1.1**: a category's `scheme`, a link's `hreflang`,
-`contributors`, `rights`, `ttl_minutes`, any `rel` other than
-`alternate` and `next`.
+| `RssOptions` field | `default_options()` |
+| --- | --- |
+| `tolerance` | `RssLenient` |
+| `base` | empty |
+| `max_entries` | 0, meaning no limit |
+| `max_bytes` | 0, meaning no limit |
+| `max_depth` | 64 |
+| `resolve_relative` | true |
+| `read_extensions` | true |
 
-`RssWriteOptions.lossy` turns each refusal into a dropped field and a
-note, for the caller who genuinely wants RSS 2.0 and has read the list.
+A feed is three levels deep, so a document needing more than 64 is not
+a feed.
 
-One deliberate impurity: an RSS 2.0 write emits `<atom:link
-rel="self">`.  RSS 2.0 has no element for a feed's own address, a feed
-that does not state it cannot be re-found from its own contents, and
-the Atom element is what every RSS feed in the wild already uses for
-this.
+## What is not included
 
-## A 40 MB archive feed
+- **Anything that fetches.** No conditional request, no redirect
+  following, no ETag store. This package declares no effects.
+- **Sanitising.** See rule 2.
+- **Character set detection and transcoding.** See rule 11. A table of
+  character sets is much larger than a feed reader needs.
+- **HTML entity expansion.** See rule 12.
+- **The thirty extension namespaces feedparser reads**, such as iTunes,
+  Media RSS and GeoRSS. Four are read, listed in rule 10. A podcast
+  client wanting the iTunes vocabulary is better served by a package
+  that models it than by fields bolted onto a generic entry.
+- **RSS 1.0 and Atom 0.3.** See rule 13.
+- **A build for a microcontroller.** A feed is a list of entries each
+  holding several lists of strings, and the JSON half rides on a host
+  handle, so this package makes no device claim.
 
-`rssread.stream` reads as far as the first entry — so the feed's title
-and `updated` stamp are available immediately — and `rssread.next_entry`
-answers one entry at a time.  Nothing accumulates.  On the writing
-side `rsswrite.write_head`, `write_entry` and `write_tail` are the
-same shape, so a program streaming a feed out of a database never
-builds a whole `RssFeed`.
+## Related packages
 
-JSON Feed is not streamable this way; the value arrives whole, and
-`stream` says so rather than pretending.
+- [xml-nv](https://novo-lang.org/packages/xml-nv) supplies the scanner
+  the streaming reader is built on, the tree the whole-document readers
+  walk, and the three escape rules a feed writer needs. This package
+  depends on it.
+- [calendar-nv](https://novo-lang.org/packages/calendar-nv) is the
+  civil date and time a stamp holds, and RFC 3339. RFC 822, which RSS
+  2.0 specifies, lives here in `rssdate`, along with the tolerant
+  parse: a date library whose one entry point accepts four shapes
+  cannot be used to validate anything. This package depends on it.
+- [url-nv](https://novo-lang.org/packages/url-nv) resolves a relative
+  reference against a base, which is RFC 3986 section 5.3. This
+  package depends on it.
+- [html-nv](https://novo-lang.org/packages/html-nv) is what a consumer
+  displaying a feed needs, for escaping, sanitising and the named
+  character references. This package does not depend on it, so a feed
+  poller reading only titles and dates does not link an HTML tokenizer.
+- [mime-nv](https://novo-lang.org/packages/mime-nv) is what decides
+  whether a fetched body is a feed before it is parsed.
+- `std.json` in the standard library is the value the JSON Feed half
+  reads and writes.
 
-## Why `core`
+## Tests
 
-Nothing here reads or writes anything: a reader takes bytes the caller
-already has, and a writer appends to a buffer the caller owns.  That
-is what makes the tolerance policy testable — every one of the repairs
-above is a note on a value, asserted against a string in a test, with
-no server in the room.
+```bash
+novo test tests/rsserror_tests.nv   # the notes, and which are strict
+novo test tests/rssfeed_tests.nv    # the feed value and its questions
+novo test tests/rssdate_tests.nv    # RFC 822, RFC 3339, and the tolerant parse
+novo test tests/rssread_tests.nv    # the three readers and the repairs
+novo test tests/rssjson_tests.nv    # JSON Feed
+novo test tests/rsswrite_tests.nv   # the writers and what each format refuses
+```
 
-No device claim.  A feed is a list of entries each holding several
-lists of strings; xml-nv's tree is one allocation per document and
-makes no device claim either; and the JSON half rides on `JsonValueH`,
-which the standard library documents as unavailable at
-`@tier(embedded)`.  A microcontroller does not read feeds.
+The normative sources are the RSS 2.0 specification, RFC 4287 for Atom
+1.0, and the JSON Feed 1.1 specification. The reference implementations
+are the Rust crate `rss` and Python's feedparser, and feedparser's own
+test corpus is the oracle for the tolerance policy. Its character-set
+and HTTP suites are out of scope for the reasons above.
 
-## Dependencies
+The suite asserts that the same feed read from all three formats gives
+the same value, that each repair in rule 5 through rule 12 files the
+named note, that RSS 1.0 and Atom 0.3 are refused by name, that a
+strict read stops at the first note `stops_strict` answers true for,
+and that `writable` names every field a target cannot carry.
 
-Three, all `core`.
+The tests compile today and fail at run, each on the
+`not implemented: rss-nv.<module>.<fn>` panic that is its body. That is
+the expected state of an interface release. They turn green one at a
+time as bodies land.
 
-- **xml-nv** — the scanner and the tree.  `xmlparse.next_event` is the
-  streaming door `rssread.stream` is built on, `xmltree` is what the
-  whole-document readers walk, and `xmlwrite`'s three escape rules —
-  character data, attribute values, comments — are what a feed writer
-  that rolled its own would get wrong.
-- **calendar-nv** — the civil date-time an `RssStamp` holds, and RFC
-  3339.  RFC 822, which RSS 2.0 specifies and calendar-nv has no
-  parser or printer for, lives in `rssdate`, along with the tolerant
-  multi-format parse — which does not belong in a date library,
-  because a date library whose one entry point accepts four different
-  shapes cannot be used to validate anything.
-- **url-nv** — RFC 3986 § 5.3, which is what resolving a relative
-  reference against `xml:base` is.
+## Implementation status
 
-Not **html-nv**.  This package carries text and says what kind it is;
-it does not sanitise, escape or render it.  A consumer that displays a
-feed needs html-nv and should depend on it directly — putting it here
-would make every feed poller that only reads titles and dates pay for
-an HTML tokenizer.
-
-## Ports
-
-[rss](https://github.com/rust-syndication/rss) and
-[feedparser](https://github.com/kurtmckee/feedparser) are the
-reference implementations; feedparser's own test corpus is the oracle
-for the tolerance policy, and its `sgml` and `http` suites are out of
-scope for the reasons above.
-[JSON Feed 1.1](https://www.jsonfeed.org/version/1.1/) is read from
-its specification.
+| Item | Implemented |
+| --- | --- |
+| Every `pub struct` and `pub enum` in the six modules | the types are declared |
+| `rsserror.fault`, `.note`, `.stops_strict`, `.strict_kinds` | no |
+| `rsserror.note_name`, `.note_text`, `.kind_name`, `.message`, `.is_recoverable` | no |
+| `rsserror.notes_for_entry`, `.notes_of_kind` | no |
+| `rssfeed.empty_feed`, `.empty_entry`, `.plain`, `.html`, `.xhtml`, `.text_in` | no |
+| `rssfeed.link`, `.link_full`, `.person`, `.category`, `.enclosure`, `.stamp` | no |
+| `rssfeed.with_id`, `.with_title`, `.with_subtitle`, `.with_updated`, `.with_language`, `.with_generator` | no |
+| `rssfeed.push_link`, `.push_author`, `.push_category`, `.push_entry` | no |
+| `rssfeed.entry_with_id`, `.entry_with_title`, `.entry_with_content`, `.entry_with_summary`, `.entry_with_url` | no |
+| `rssfeed.entry_with_published`, `.entry_with_updated` | no |
+| `rssfeed.entry_push_link`, `.entry_push_author`, `.entry_push_category`, `.entry_push_enclosure` | no |
+| `rssfeed.text_is_markup`, `.link_with_rel`, `.links_with_rel` | no |
+| `rssfeed.self_url`, `.site_url`, `.entry_url`, `.entry_body`, `.entry_when` | no |
+| `rssfeed.newest`, `.compare_stamps`, `.sorted_entries`, `.entry_by_id` | no |
+| `rssfeed.format_name`, `.format_mime` | no |
+| `rssdate.formats`, `.parse_rfc822`, `.parse_rfc3339`, `.parse_any`, `.shape_of` | no |
+| `rssdate.format_rfc822`, `.format_rfc3339`, `.zone_offset`, `.widen_year`, `.epoch_seconds` | no |
+| `rssread.default_options`, `.with_tolerance`, `.with_base`, `.with_max_entries` | no |
+| `rssread.sniff`, `.read`, `.read_with`, `.read_xml`, `.read_rss20`, `.read_atom10` | no |
+| `rssread.stream`, `.next_entry`, `.head_of`, `.stream_notes` | no |
+| `rssread.notes_of`, `.would_fail_strict` | no |
+| `rssjson.versions`, `.read_value`, `.read_text`, `.is_feed`, `.unread_members` | no |
+| `rssjson.to_value`, `.entry_to_value`, `.entry_from_value` | no |
+| `rsswrite.default_options`, `.compact`, `.with_lossy`, `.with_self_url`, `.with_max_entries` | no |
+| `rsswrite.writable`, `.write`, `.write_rss20`, `.write_atom10`, `.write_json11` | no |
+| `rsswrite.write_entry`, `.write_head`, `.write_tail`, `.write_len` | no |
 
 ## Licence
 
-Apache-2.0.
+Apache-2.0. See `LICENSE`.
+
+<!-- docs/writing-a-readme.md is the style guide for this page. -->
