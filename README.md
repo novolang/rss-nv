@@ -234,7 +234,8 @@ a feed.
 - **RSS 1.0 and Atom 0.3.** See rule 13.
 - **A build for a microcontroller.** A feed is a list of entries each
   holding several lists of strings, and the JSON half rides on a host
-  handle, so this package makes no device claim.
+  handle, so this package does not build for a microcontroller with no
+  heap allocator.
 
 ## Related packages
 
