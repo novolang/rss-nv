@@ -161,6 +161,18 @@ pub struct RssFault
     // Index into `RssFeed.entries`, or `-1` for the feed itself.
     entry: Int
 
+// `RssFault` is an `Error`, which is what lets `Result<T, RssFault>`
+// exist at all — every fallible signature in `rssread`, `rsswrite`,
+// `rssjson` and `rssdate` answers with one.
+impl Error for RssFault
+    // The one-line message: `rsserror.message`'s sentence, the kind's
+    // short name with the byte offset and the entry index it happened
+    // at.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("rss-nv.RssFault.message")
+
 // A fault, built.
 //
 // ```novo

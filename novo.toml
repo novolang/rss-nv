@@ -67,6 +67,6 @@ novo        = ">= 0.8.9"
 # feed needs html-nv and should depend on it directly — putting it
 # here would make every feed poller that only reads titles and dates
 # pay for an HTML tokenizer.
-xml-nv      = "^0.0.1"
+xml-nv      = "^0.0.2"
 calendar-nv = "^0.0.2"
 url-nv      = "^0.1.1"
