@@ -1,6 +1,6 @@
 [package]
 name        = "rss-nv"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "RSS 2.0, Atom 1.0 and JSON Feed 1.1 read into one feed value and written back out of it, over xml-nv's events: every human-readable string carries whether it is characters, HTML or XHTML, feedparser's tolerance is an enum with a note list rather than one flag, and the writers append to a caller's buffer.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
